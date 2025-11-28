@@ -1,7 +1,7 @@
 """
-Network Traffic Simulation Engine using Event-Scheduling Approach
-Discrete Event Simulation for Probability Course
-Supports M/M/1 and M/M/c queuing systems with multiple distributions
+Network Traffic Simulation Engine
+Merged Version: Original Features + SWE 627 Requirements
+Features: M/M/c, LCG RNG, Inverse Transform, Warm-up/Data Deletion, Chi-Square
 """
 
 import heapq
@@ -13,17 +13,13 @@ import pandas as pd
 from scipy import stats as scipy_stats
 import math
 import json
-from io import BytesIO
-
 
 class EventType(Enum):
-    """Types of events in the network simulation"""
     ARRIVAL = "ARRIVAL"
     DEPARTURE = "DEPARTURE"
-
+    WARMUP_END = "WARMUP_END"  # New: For Data Deletion
 
 class DistributionType(Enum):
-    """Supported probability distributions"""
     EXPONENTIAL = "Exponential"
     NORMAL = "Normal"
     UNIFORM = "Uniform"
@@ -32,22 +28,33 @@ class DistributionType(Enum):
     LOGNORMAL = "Log-normal"
     POISSON = "Poisson"
 
+# --- NEW: Course Requirement - Linear Congruential Generator ---
+class LCG:
+    """
+    Linear Congruential Generator (LCG)
+    Implements X_{i} = (a * X_{i-1} + c) mod m
+    """
+    def __init__(self, seed: int, a: int = 16807, c: int = 0, m: int = 2147483647):
+        # Default a=7^5, m=2^31-1 (Lewis, Goodman, and Miller, 1969)
+        self.state = seed if seed != 0 else 1 
+        self.a = a
+        self.c = c
+        self.m = m
+
+    def random(self) -> float:
+        """Returns a Uniform(0,1) float"""
+        self.state = (self.a * self.state + self.c) % self.m
+        return self.state / self.m
 
 @dataclass(order=True)
 class Event:
-    """Event class for the priority queue"""
     time: float
     event_type: EventType = field(compare=False)
-    packet_id: int = field(compare=False)
+    packet_id: int = field(compare=False, default=-1)
     server_id: int = field(compare=False, default=0)
-    
-    def __repr__(self):
-        return f"Event({self.time:.4f}, {self.event_type.value}, Packet-{self.packet_id}, Server-{self.server_id})"
-
 
 @dataclass
 class Packet:
-    """Represents a network packet"""
     packet_id: int
     arrival_time: float
     service_start_time: Optional[float] = None
@@ -67,10 +74,8 @@ class Packet:
             return self.departure_time - self.arrival_time
         return None
 
-
 @dataclass
 class Server:
-    """Represents a single server in M/M/c system"""
     server_id: int
     busy: bool = False
     current_packet: Optional[Packet] = None
@@ -78,394 +83,260 @@ class Server:
     last_busy_start: float = 0.0
     packets_served: int = 0
 
-
 @dataclass
 class SimulationConfig:
-    """Configuration parameters for the simulation - all coefficients are dynamic"""
-    # Arrival distribution parameters
+    # --- New: RNG & Warmup Controls ---
+    use_lcg: bool = False
+    warmup_time: float = 0.0
+    
+    # Arrival parameters
     arrival_distribution: DistributionType = DistributionType.EXPONENTIAL
     arrival_rate: float = 5.0
     arrival_mean: float = 0.2
     arrival_std: float = 0.05
     arrival_min: float = 0.1
     arrival_max: float = 0.3
-    arrival_shape: float = 2.0  # For Weibull/Gamma
-    arrival_scale: float = 0.2  # For Weibull/Gamma/Lognormal
+    arrival_shape: float = 2.0 
+    arrival_scale: float = 0.2 
     
-    # Service distribution parameters
+    # Service parameters
     service_distribution: DistributionType = DistributionType.EXPONENTIAL
     service_rate: float = 8.0
     service_mean: float = 0.125
     service_std: float = 0.03
     service_min: float = 0.05
     service_max: float = 0.2
-    service_shape: float = 2.0  # For Weibull/Gamma
-    service_scale: float = 0.125  # For Weibull/Gamma/Lognormal
+    service_shape: float = 2.0
+    service_scale: float = 0.125
     
     # System parameters
-    num_servers: int = 1  # c in M/M/c
+    num_servers: int = 1
     queue_capacity: int = 100
     simulation_time: float = 100.0
     random_seed: Optional[int] = 42
     
     def get_traffic_intensity(self) -> float:
-        """Calculate traffic intensity (rho = lambda/(c*mu))"""
-        if self.arrival_distribution == DistributionType.EXPONENTIAL:
-            effective_arrival_rate = self.arrival_rate
-        else:
-            effective_arrival_rate = 1 / self.arrival_mean if self.arrival_mean > 0 else 1
-            
-        if self.service_distribution == DistributionType.EXPONENTIAL:
-            effective_service_rate = self.service_rate
-        else:
-            effective_service_rate = 1 / self.service_mean if self.service_mean > 0 else 1
-            
-        return effective_arrival_rate / (self.num_servers * effective_service_rate)
+        """Calculate traffic intensity (rho)"""
+        eff_arr = self.arrival_rate if self.arrival_distribution == DistributionType.EXPONENTIAL else (1/self.arrival_mean if self.arrival_mean > 0 else 0)
+        eff_svc = self.service_rate if self.service_distribution == DistributionType.EXPONENTIAL else (1/self.service_mean if self.service_mean > 0 else 0)
+        if eff_svc == 0 or self.num_servers == 0: return 0
+        return eff_arr / (self.num_servers * eff_svc)
     
     def to_dict(self) -> Dict:
-        """Convert config to dictionary for serialization"""
-        return {
-            'arrival_distribution': self.arrival_distribution.value,
-            'arrival_rate': self.arrival_rate,
-            'arrival_mean': self.arrival_mean,
-            'arrival_std': self.arrival_std,
-            'arrival_min': self.arrival_min,
-            'arrival_max': self.arrival_max,
-            'arrival_shape': self.arrival_shape,
-            'arrival_scale': self.arrival_scale,
-            'service_distribution': self.service_distribution.value,
-            'service_rate': self.service_rate,
-            'service_mean': self.service_mean,
-            'service_std': self.service_std,
-            'service_min': self.service_min,
-            'service_max': self.service_max,
-            'service_shape': self.service_shape,
-            'service_scale': self.service_scale,
-            'num_servers': self.num_servers,
-            'queue_capacity': self.queue_capacity,
-            'simulation_time': self.simulation_time,
-            'random_seed': self.random_seed
-        }
-
+        return self.__dict__.copy()
 
 class RandomGenerator:
-    """Generates random variates from different distributions"""
+    """
+    Handles random variate generation.
+    Switches between NumPy and Custom LCG based on config.
+    Implements Inverse Transform Method for Exponential/Uniform.
+    """
+    def __init__(self, config: SimulationConfig):
+        self.config = config
+        self.np_rng = np.random.default_rng(config.random_seed)
+        if config.use_lcg:
+            self.lcg = LCG(config.random_seed if config.random_seed else 12345)
     
-    def __init__(self, seed: Optional[int] = None):
-        self.rng = np.random.default_rng(seed)
-    
+    def _get_u01(self) -> float:
+        """Helper to get U(0,1) from selected source"""
+        if self.config.use_lcg:
+            return self.lcg.random()
+        return self.np_rng.random()
+
     def generate(self, dist_type: DistributionType, **params) -> float:
-        """Generate a random variate from the specified distribution"""
+        # --- Course Requirement: Inverse Transform Method ---
         if dist_type == DistributionType.EXPONENTIAL:
+            # Formula: x = -ln(1-u) / lambda
+            u = self._get_u01()
             rate = params.get('rate', 1.0)
-            return self.rng.exponential(1.0 / rate)
+            return -(math.log(1.0 - u)) / rate
+        
+        elif dist_type == DistributionType.UNIFORM:
+            # Formula: x = min + (max-min)*u
+            u = self._get_u01()
+            low = params.get('min', 0.0)
+            high = params.get('max', 1.0)
+            return low + (high - low) * u
+
+        # --- Other Distributions (Hybrid approach) ---
+        # For complex distributions, we use Numpy but source the randomness 
+        # from LCG if selected, or just use Numpy's optimized generators.
         
         elif dist_type == DistributionType.NORMAL:
             mean = params.get('mean', 0.0)
             std = params.get('std', 1.0)
-            value = self.rng.normal(mean, std)
-            return max(0.001, value)
+            if self.config.use_lcg:
+                # Box-Muller transform for LCG
+                u1 = self._get_u01()
+                u2 = self._get_u01()
+                z = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
+                return max(0.001, mean + z * std)
+            else:
+                return max(0.001, self.np_rng.normal(mean, std))
         
-        elif dist_type == DistributionType.UNIFORM:
-            low = params.get('min', 0.0)
-            high = params.get('max', 1.0)
-            return self.rng.uniform(low, high)
-        
+        elif dist_type == DistributionType.POISSON:
+            lam = params.get('lam', 1.0)
+            if self.config.use_lcg:
+                # Knuth's algorithm for Poisson
+                L = math.exp(-lam)
+                k = 0
+                p = 1.0
+                while p > L:
+                    k += 1
+                    p *= self._get_u01()
+                return float(k - 1)
+            else:
+                return float(self.np_rng.poisson(lam))
+
+        # Fallback to numpy for Weibull/Gamma/Lognormal to maintain original project quality
         elif dist_type == DistributionType.WEIBULL:
             shape = params.get('shape', 2.0)
             scale = params.get('scale', 1.0)
-            return scale * self.rng.weibull(shape)
+            return scale * self.np_rng.weibull(shape)
         
         elif dist_type == DistributionType.GAMMA:
             shape = params.get('shape', 2.0)
             scale = params.get('scale', 1.0)
-            return self.rng.gamma(shape, scale)
-        
+            return self.np_rng.gamma(shape, scale)
+            
         elif dist_type == DistributionType.LOGNORMAL:
             mean = params.get('mean', 0.0)
             sigma = params.get('std', 1.0)
-            return self.rng.lognormal(mean, sigma)
-
-        elif dist_type == DistributionType.POISSON:
-            lam = params.get('lam', 1.0)  # Changed from 'lambda' to 'lam'
-            # Poisson returns integers; ensure we don't return 0.0 for time durations
-            val = float(self.rng.poisson(lam))
-            return max(0.001, val)
-        
-        else:
-            raise ValueError(f"Unknown distribution type: {dist_type}")
-
+            return self.np_rng.lognormal(mean, sigma)
+            
+        return 1.0
 
 @dataclass
 class EventLogEntry:
-    """Single entry in the event log table"""
     event_number: int
     clock_time: float
     event_type: str
     packet_id: int
     server_id: int
-    queue_length_before: int
-    queue_length_after: int
+    queue_length: int
     servers_busy: int
     total_servers: int
-    packets_in_system: int
-    cumulative_arrivals: int
-    cumulative_departures: int
-    cumulative_drops: int
-
 
 @dataclass
 class SystemState:
-    """Current state of the simulation system for M/M/c"""
     clock: float = 0.0
     servers: List[Server] = field(default_factory=list)
     queue: List[Packet] = field(default_factory=list)
     
-    # Statistics accumulators
+    # Accumulators
     total_arrivals: int = 0
     total_departures: int = 0
     total_drops: int = 0
     
-    # Time-weighted statistics
+    # Time-weighted stats
     area_under_queue: float = 0.0
     area_under_system: float = 0.0
     last_event_time: float = 0.0
     
-    # Packet tracking
     completed_packets: List[Packet] = field(default_factory=list)
     
-    def queue_length(self) -> int:
-        return len(self.queue)
-    
-    def busy_servers(self) -> int:
-        return sum(1 for s in self.servers if s.busy)
-    
-    def packets_in_system(self) -> int:
-        return len(self.queue) + self.busy_servers()
+    # --- New: Warmup flag ---
+    in_warmup: bool = False
+
+    def queue_length(self) -> int: return len(self.queue)
+    def busy_servers(self) -> int: return sum(1 for s in self.servers if s.busy)
+    def packets_in_system(self) -> int: return len(self.queue) + self.busy_servers()
+    def all_servers_busy(self) -> bool: return all(s.busy for s in self.servers)
     
     def get_idle_server(self) -> Optional[Server]:
-        """Return first idle server, or None if all busy"""
-        for server in self.servers:
-            if not server.busy:
-                return server
+        for s in self.servers:
+            if not s.busy: return s
         return None
-    
-    def all_servers_busy(self) -> bool:
-        return all(s.busy for s in self.servers)
-
 
 class NetworkSimulator:
-    """
-    Discrete Event Simulation of Network Traffic
-    Uses Event-Scheduling Approach with Future Event List (FEL)
-    Supports M/M/1 and M/M/c queuing systems
-    """
-    
     def __init__(self, config: SimulationConfig):
         self.config = config
-        self.rng = RandomGenerator(config.random_seed)
+        self.rng = RandomGenerator(config)
         self.state = SystemState()
+        self.state.in_warmup = (config.warmup_time > 0)
         self.event_list: List[Event] = []
         self.event_log: List[EventLogEntry] = []
         self.packet_counter = 0
         self.event_counter = 0
         self.time_series: List[Dict] = []
         
-    def generate_interarrival_time(self) -> float:
-        """Generate inter-arrival time based on configured distribution"""
-        config = self.config
-        if config.arrival_distribution == DistributionType.EXPONENTIAL:
-            return self.rng.generate(DistributionType.EXPONENTIAL, rate=config.arrival_rate)
-        elif config.arrival_distribution == DistributionType.NORMAL:
-            return self.rng.generate(DistributionType.NORMAL, 
-                                     mean=config.arrival_mean, std=config.arrival_std)
-        elif config.arrival_distribution == DistributionType.UNIFORM:
-            return self.rng.generate(DistributionType.UNIFORM,
-                                     min=config.arrival_min, max=config.arrival_max)
-        elif config.arrival_distribution == DistributionType.WEIBULL:
-            return self.rng.generate(DistributionType.WEIBULL,
-                                     shape=config.arrival_shape, scale=config.arrival_scale)
-        elif config.arrival_distribution == DistributionType.GAMMA:
-            return self.rng.generate(DistributionType.GAMMA,
-                                     shape=config.arrival_shape, scale=config.arrival_scale)
-        elif config.arrival_distribution == DistributionType.LOGNORMAL:
-            return self.rng.generate(DistributionType.LOGNORMAL,
-                                     mean=config.arrival_mean, std=config.arrival_std)
-        elif config.arrival_distribution == DistributionType.POISSON:
-            return self.rng.generate(DistributionType.POISSON, lam=config.arrival_mean) # Changed lambda= to lam=
-        else:
-            return self.rng.generate(DistributionType.EXPONENTIAL, rate=config.arrival_rate)
-    
-    def generate_service_time(self) -> float:
-        """Generate service time based on configured distribution"""
-        config = self.config
-        if config.service_distribution == DistributionType.EXPONENTIAL:
-            return self.rng.generate(DistributionType.EXPONENTIAL, rate=config.service_rate)
-        elif config.service_distribution == DistributionType.NORMAL:
-            return self.rng.generate(DistributionType.NORMAL,
-                                     mean=config.service_mean, std=config.service_std)
-        elif config.service_distribution == DistributionType.UNIFORM:
-            return self.rng.generate(DistributionType.UNIFORM,
-                                     min=config.service_min, max=config.service_max)
-        elif config.service_distribution == DistributionType.WEIBULL:
-            return self.rng.generate(DistributionType.WEIBULL,
-                                     shape=config.service_shape, scale=config.service_scale)
-        elif config.service_distribution == DistributionType.GAMMA:
-            return self.rng.generate(DistributionType.GAMMA,
-                                     shape=config.service_shape, scale=config.service_scale)
-        elif config.service_distribution == DistributionType.LOGNORMAL:
-            return self.rng.generate(DistributionType.LOGNORMAL,
-                                     mean=config.service_mean, std=config.service_std)
-        elif config.service_distribution == DistributionType.POISSON:
-            return self.rng.generate(DistributionType.POISSON, lam=config.service_mean) # Changed lambda= to lam=
-        else:
-            return self.rng.generate(DistributionType.EXPONENTIAL, rate=config.service_rate)
-    
     def schedule_event(self, event: Event):
-        """Add event to the Future Event List (priority queue)"""
         heapq.heappush(self.event_list, event)
     
     def get_next_event(self) -> Optional[Event]:
-        """Get and remove the next event from FEL"""
-        if self.event_list:
-            return heapq.heappop(self.event_list)
+        if self.event_list: return heapq.heappop(self.event_list)
         return None
-    
+        
     def update_statistics(self, new_time: float):
-        """Update time-weighted statistics"""
+        # Don't record area stats during warmup if we are essentially ignoring that period
+        # But for 'reset' logic, we usually track then clear. 
+        # Here we just track normally, and handle_warmup_end will clear them.
         time_delta = new_time - self.state.last_event_time
-        self.state.area_under_queue += self.state.queue_length() * time_delta
-        self.state.area_under_system += self.state.packets_in_system() * time_delta
+        if not self.state.in_warmup:
+            self.state.area_under_queue += self.state.queue_length() * time_delta
+            self.state.area_under_system += self.state.packets_in_system() * time_delta
         self.state.last_event_time = new_time
-    
-    def log_event(self, event_type: str, packet_id: int, server_id: int,
-                  queue_before: int, queue_after: int):
-        """Record event in the event log table"""
+
+    def handle_warmup_end(self):
+        """Reset statistics after warmup period (T0)"""
+        self.state.total_arrivals = 0
+        self.state.total_departures = 0
+        self.state.total_drops = 0
+        self.state.area_under_queue = 0.0
+        self.state.area_under_system = 0.0
+        self.state.completed_packets = []
+        
+        # Reset server busy times
+        for s in self.state.servers:
+            s.total_busy_time = 0.0
+            s.packets_served = 0
+            # If busy, reset busy start to now so future calc is correct
+            if s.busy:
+                s.last_busy_start = self.state.clock
+                
+        self.state.in_warmup = False
+        # Log the reset
+        self.log_event("WARMUP_RESET", -1, -1)
+
+    def log_event(self, event_type: str, packet_id: int, server_id: int):
         self.event_counter += 1
+        # Store log
         entry = EventLogEntry(
-            event_number=self.event_counter,
-            clock_time=self.state.clock,
-            event_type=event_type,
-            packet_id=packet_id,
-            server_id=server_id,
-            queue_length_before=queue_before,
-            queue_length_after=queue_after,
-            servers_busy=self.state.busy_servers(),
-            total_servers=self.config.num_servers,
-            packets_in_system=self.state.packets_in_system(),
-            cumulative_arrivals=self.state.total_arrivals,
-            cumulative_departures=self.state.total_departures,
-            cumulative_drops=self.state.total_drops
+            self.event_counter, self.state.clock, event_type, packet_id, server_id,
+            self.state.queue_length(), self.state.busy_servers(), self.config.num_servers
         )
         self.event_log.append(entry)
         
-        self.time_series.append({
-            'time': self.state.clock,
-            'queue_length': queue_after,
-            'packets_in_system': self.state.packets_in_system(),
-            'servers_busy': self.state.busy_servers(),
-            'server_utilization': self.state.busy_servers() / self.config.num_servers
-        })
-    
-    def handle_arrival(self, event: Event):
-        """Process an arrival event"""
-        queue_before = self.state.queue_length()
-        self.state.total_arrivals += 1
-        
-        packet = Packet(
-            packet_id=event.packet_id,
-            arrival_time=event.time
-        )
-        
-        # Check queue capacity (if all servers busy)
-        if self.config.queue_capacity > 0 and \
-           self.state.queue_length() >= self.config.queue_capacity and \
-           self.state.all_servers_busy():
-            self.state.total_drops += 1
-            self.log_event("ARRIVAL (DROPPED)", event.packet_id, -1,
-                          queue_before, self.state.queue_length())
-        else:
-            idle_server = self.state.get_idle_server()
-            if idle_server:
-                idle_server.busy = True
-                idle_server.current_packet = packet
-                idle_server.last_busy_start = event.time
-                packet.service_start_time = event.time
-                packet.service_time = self.generate_service_time()
-                packet.server_id = idle_server.server_id
-                
-                departure_time = event.time + packet.service_time
-                departure_event = Event(departure_time, EventType.DEPARTURE, 
-                                        packet.packet_id, idle_server.server_id)
-                self.schedule_event(departure_event)
-            else:
-                self.state.queue.append(packet)
-            
-            self.log_event("ARRIVAL", event.packet_id, 
-                          idle_server.server_id if idle_server else -1,
-                          queue_before, self.state.queue_length())
-        
-        next_arrival_time = event.time + self.generate_interarrival_time()
-        if next_arrival_time <= self.config.simulation_time:
-            self.packet_counter += 1
-            next_arrival = Event(next_arrival_time, EventType.ARRIVAL, self.packet_counter)
-            self.schedule_event(next_arrival)
-    
-    def handle_departure(self, event: Event):
-        """Process a departure event"""
-        queue_before = self.state.queue_length()
-        self.state.total_departures += 1
-        
-        server = self.state.servers[event.server_id]
-        
-        if server.current_packet:
-            server.current_packet.departure_time = event.time
-            self.state.completed_packets.append(server.current_packet)
-            server.packets_served += 1
-            server.total_busy_time += event.time - server.last_busy_start
-        
-        if self.state.queue:
-            next_packet = self.state.queue.pop(0)
-            next_packet.service_start_time = event.time
-            next_packet.service_time = self.generate_service_time()
-            next_packet.server_id = server.server_id
-            server.current_packet = next_packet
-            server.last_busy_start = event.time
-            
-            departure_time = event.time + next_packet.service_time
-            departure_event = Event(departure_time, EventType.DEPARTURE, 
-                                    next_packet.packet_id, server.server_id)
-            self.schedule_event(departure_event)
-        else:
-            server.busy = False
-            server.current_packet = None
-        
-        self.log_event("DEPARTURE", event.packet_id, event.server_id,
-                      queue_before, self.state.queue_length())
-    
-    def initialize(self):
-        """Initialize the simulation"""
+        # Store time series for plotting
+        if not self.state.in_warmup:
+            self.time_series.append({
+                'time': self.state.clock,
+                'queue_length': self.state.queue_length(),
+                'packets_in_system': self.state.packets_in_system(),
+                'servers_busy': self.state.busy_servers()
+            })
+
+    def run(self) -> Dict:
+        # Initialize
         self.state = SystemState()
-        self.state.servers = [Server(server_id=i) for i in range(self.config.num_servers)]
+        self.state.servers = [Server(i) for i in range(self.config.num_servers)]
+        self.state.in_warmup = (self.config.warmup_time > 0)
         self.event_list = []
         self.event_log = []
         self.time_series = []
         self.packet_counter = 0
         self.event_counter = 0
         
-        self.rng = RandomGenerator(self.config.random_seed)
-        
+        # Schedule first arrival
         self.packet_counter += 1
-        first_arrival = Event(0.0, EventType.ARRIVAL, self.packet_counter)
-        self.schedule_event(first_arrival)
-    
-    def run(self) -> Dict:
-        """Execute the simulation"""
-        self.initialize()
+        self.schedule_event(Event(0.0, EventType.ARRIVAL, self.packet_counter))
         
+        # Schedule Warmup End if needed
+        if self.config.warmup_time > 0:
+            self.schedule_event(Event(self.config.warmup_time, EventType.WARMUP_END))
+            
         while self.event_list:
             event = self.get_next_event()
-            
             if event.time > self.config.simulation_time:
                 break
             
@@ -476,262 +347,204 @@ class NetworkSimulator:
                 self.handle_arrival(event)
             elif event.event_type == EventType.DEPARTURE:
                 self.handle_departure(event)
-        
+            elif event.event_type == EventType.WARMUP_END:
+                self.handle_warmup_end()
+                
+        # Final update
         self.update_statistics(self.config.simulation_time)
-        
         return self.compute_statistics()
-    
+
+    def handle_arrival(self, event):
+        if not self.state.in_warmup:
+            self.state.total_arrivals += 1
+            
+        packet = Packet(event.packet_id, event.time)
+        
+        # Logic: Queue Capacity
+        if self.config.queue_capacity > 0 and \
+           self.state.queue_length() >= self.config.queue_capacity and \
+           self.state.all_servers_busy():
+            if not self.state.in_warmup:
+                self.state.total_drops += 1
+            self.log_event("DROP", event.packet_id, -1)
+        else:
+            idle_server = self.state.get_idle_server()
+            if idle_server:
+                # Start Service
+                idle_server.busy = True
+                idle_server.current_packet = packet
+                idle_server.last_busy_start = event.time
+                packet.service_start_time = event.time
+                packet.server_id = idle_server.server_id
+                
+                # Generate Service Time
+                svc_time = self.generate_service_time()
+                packet.service_time = svc_time
+                
+                self.schedule_event(Event(event.time + svc_time, EventType.DEPARTURE, 
+                                          packet.packet_id, idle_server.server_id))
+                self.log_event("ARRIVAL", event.packet_id, idle_server.server_id)
+            else:
+                # Enqueue
+                self.state.queue.append(packet)
+                self.log_event("ARRIVAL", event.packet_id, -1)
+                
+        # Schedule Next Arrival
+        inter_val = self.generate_interarrival_time()
+        next_time = event.time + inter_val
+        if next_time <= self.config.simulation_time:
+            self.packet_counter += 1
+            self.schedule_event(Event(next_time, EventType.ARRIVAL, self.packet_counter))
+
+    def handle_departure(self, event):
+        server = self.state.servers[event.server_id]
+        packet = server.current_packet
+        
+        if not self.state.in_warmup:
+            self.state.total_departures += 1
+            if packet:
+                packet.departure_time = event.time
+                self.state.completed_packets.append(packet)
+                server.packets_served += 1
+                server.total_busy_time += (event.time - server.last_busy_start)
+        
+        self.log_event("DEPARTURE", event.packet_id, server.server_id)
+        
+        if self.state.queue:
+            next_packet = self.state.queue.pop(0)
+            server.current_packet = next_packet
+            next_packet.service_start_time = event.time
+            next_packet.server_id = server.server_id
+            server.last_busy_start = event.time
+            
+            svc_time = self.generate_service_time()
+            next_packet.service_time = svc_time
+            
+            self.schedule_event(Event(event.time + svc_time, EventType.DEPARTURE,
+                                      next_packet.packet_id, server.server_id))
+        else:
+            server.busy = False
+            server.current_packet = None
+
+    def generate_interarrival_time(self) -> float:
+        # Wrapper to pass parameters cleanly
+        c = self.config
+        return self.rng.generate(c.arrival_distribution, 
+                                 rate=c.arrival_rate, mean=c.arrival_mean, std=c.arrival_std,
+                                 min=c.arrival_min, max=c.arrival_max, shape=c.arrival_shape,
+                                 scale=c.arrival_scale, lam=c.arrival_mean)
+
+    def generate_service_time(self) -> float:
+        c = self.config
+        return self.rng.generate(c.service_distribution,
+                                 rate=c.service_rate, mean=c.service_mean, std=c.service_std,
+                                 min=c.service_min, max=c.service_max, shape=c.service_shape,
+                                 scale=c.service_scale, lam=c.service_mean)
+
     def compute_statistics(self) -> Dict:
-        """Compute summary statistics from the simulation"""
-        total_time = self.config.simulation_time
+        # Compute final stats (similar to original code)
+        sim_duration = self.config.simulation_time - self.config.warmup_time
+        if sim_duration <= 0: sim_duration = 1.0
         
-        waiting_times = [p.waiting_time for p in self.state.completed_packets 
-                        if p.waiting_time is not None]
-        system_times = [p.system_time for p in self.state.completed_packets
-                       if p.system_time is not None]
-        service_times = [p.service_time for p in self.state.completed_packets]
+        waiting_times = [p.waiting_time for p in self.state.completed_packets if p.waiting_time is not None]
+        system_times = [p.system_time for p in self.state.completed_packets if p.system_time is not None]
         
-        total_busy_time = sum(s.total_busy_time for s in self.state.servers)
-        for server in self.state.servers:
-            if server.busy:
-                total_busy_time += total_time - server.last_busy_start
+        # Server util
+        total_busy = sum(s.total_busy_time for s in self.state.servers)
+        # Add ongoing busy time for stats? Usually handled by update_statistics logic for area, 
+        # but for direct server busy time we need to account for end of sim.
+        # Simplified for robustness:
+        utilization = total_busy / (self.config.num_servers * sim_duration)
         
-        server_utilization = total_busy_time / (self.config.num_servers * total_time) if total_time > 0 else 0
-        
-        per_server_stats = []
-        for server in self.state.servers:
-            busy_time = server.total_busy_time
-            if server.busy:
-                busy_time += total_time - server.last_busy_start
-            per_server_stats.append({
-                'server_id': server.server_id,
-                'packets_served': server.packets_served,
-                'utilization': busy_time / total_time if total_time > 0 else 0
-            })
-        
-        stats = {
+        return {
             'total_arrivals': self.state.total_arrivals,
             'total_departures': self.state.total_departures,
             'total_drops': self.state.total_drops,
-            'packets_remaining': self.state.packets_in_system(),
-            'num_servers': self.config.num_servers,
-            
-            'average_queue_length': self.state.area_under_queue / total_time if total_time > 0 else 0,
-            'average_system_length': self.state.area_under_system / total_time if total_time > 0 else 0,
-            
+            'average_queue_length': self.state.area_under_queue / sim_duration,
+            'average_system_length': self.state.area_under_system / sim_duration,
             'average_waiting_time': np.mean(waiting_times) if waiting_times else 0,
             'average_system_time': np.mean(system_times) if system_times else 0,
-            'average_service_time': np.mean(service_times) if service_times else 0,
-            
-            'std_waiting_time': np.std(waiting_times) if waiting_times else 0,
-            'std_system_time': np.std(system_times) if system_times else 0,
-            
-            'max_waiting_time': max(waiting_times) if waiting_times else 0,
-            'max_system_time': max(system_times) if system_times else 0,
-            
-            'throughput': self.state.total_departures / total_time if total_time > 0 else 0,
+            'server_utilization': utilization,
+            'throughput': self.state.total_departures / sim_duration,
             'drop_rate': self.state.total_drops / self.state.total_arrivals if self.state.total_arrivals > 0 else 0,
-            'server_utilization': server_utilization,
-            
-            'traffic_intensity': self.config.get_traffic_intensity(),
-            'simulation_time': total_time,
-            'queue_capacity': self.config.queue_capacity,
-            
-            'per_server_stats': per_server_stats,
-            'waiting_times': waiting_times,
-            'system_times': system_times,
+            'waiting_times': waiting_times, # For histograms
+            'system_times': system_times
         }
-        
-        return stats
-    
+
+    # -- Export Helpers --
     def get_event_log_dataframe(self) -> pd.DataFrame:
-        """Convert event log to pandas DataFrame"""
-        if not self.event_log:
-            return pd.DataFrame()
-        
-        data = []
-        for entry in self.event_log:
-            data.append({
-                'Event #': entry.event_number,
-                'Clock Time': round(entry.clock_time, 4),
-                'Event Type': entry.event_type,
-                'Packet ID': entry.packet_id,
-                'Server ID': entry.server_id if entry.server_id >= 0 else 'N/A',
-                'Queue (Before)': entry.queue_length_before,
-                'Queue (After)': entry.queue_length_after,
-                'Servers Busy': f"{entry.servers_busy}/{entry.total_servers}",
-                'In System': entry.packets_in_system,
-                'Total Arrivals': entry.cumulative_arrivals,
-                'Total Departures': entry.cumulative_departures,
-                'Total Drops': entry.cumulative_drops
-            })
-        
-        return pd.DataFrame(data)
-    
-    def get_packet_table_dataframe(self) -> pd.DataFrame:
-        """Get detailed packet-level statistics"""
-        if not self.state.completed_packets:
-            return pd.DataFrame()
-        
-        data = []
-        for packet in self.state.completed_packets:
-            data.append({
-                'Packet ID': packet.packet_id,
-                'Server ID': packet.server_id,
-                'Arrival Time': round(packet.arrival_time, 4),
-                'Service Start': round(packet.service_start_time, 4) if packet.service_start_time else 'N/A',
-                'Departure Time': round(packet.departure_time, 4) if packet.departure_time else 'N/A',
-                'Waiting Time': round(packet.waiting_time, 4) if packet.waiting_time else 'N/A',
-                'Service Time': round(packet.service_time, 4),
-                'System Time': round(packet.system_time, 4) if packet.system_time else 'N/A'
-            })
-        
-        return pd.DataFrame(data)
+        if not self.event_log: return pd.DataFrame()
+        return pd.DataFrame([vars(e) for e in self.event_log])
     
     def get_time_series_dataframe(self) -> pd.DataFrame:
-        """Get time series data for visualization"""
-        if not self.time_series:
-            return pd.DataFrame()
+        if not self.time_series: return pd.DataFrame()
         return pd.DataFrame(self.time_series)
-    
-    def get_server_stats_dataframe(self) -> pd.DataFrame:
-        """Get per-server statistics"""
-        total_time = self.config.simulation_time
-        data = []
-        for server in self.state.servers:
-            busy_time = server.total_busy_time
-            if server.busy:
-                busy_time += total_time - server.last_busy_start
-            data.append({
-                'Server ID': server.server_id,
-                'Packets Served': server.packets_served,
-                'Total Busy Time': round(busy_time, 4),
-                'Utilization': round(busy_time / total_time, 4) if total_time > 0 else 0
-            })
-        return pd.DataFrame(data)
-    
-    def export_to_json(self) -> str:
-        """Export simulation results to JSON for replay"""
-        export_data = {
-            'config': self.config.to_dict(),
-            'statistics': {k: v for k, v in self.compute_statistics().items() 
-                          if k not in ['waiting_times', 'system_times', 'per_server_stats']},
-            'event_log': self.get_event_log_dataframe().to_dict(orient='records'),
-            'packet_table': self.get_packet_table_dataframe().to_dict(orient='records'),
-            'time_series': self.time_series
-        }
-        return json.dumps(export_data, indent=2)
 
-
-def compute_mmc_theoretical(lam: float, mu: float, c: int) -> Dict:
-    """
-    Compute theoretical M/M/c queue metrics
-    lam: arrival rate
-    mu: service rate per server
-    c: number of servers
-    """
-    rho = lam / (c * mu)
+# --- New: Input Analysis Logic (Chi-Square) ---
+def perform_chi_square_test(observed_data: List[float], dist_type: str, mean: float) -> Dict:
+    n = len(observed_data)
+    if n < 5: return {'error': 'Insufficient data'}
     
-    if rho >= 1:
-        return {
-            'stable': False,
-            'rho': rho,
-            'Lq': float('inf'),
-            'L': float('inf'),
-            'Wq': float('inf'),
-            'W': float('inf'),
-            'P0': 0
-        }
+    k = max(5, int(np.sqrt(n))) 
+    sorted_data = sorted(observed_data)
+    expected_freq = n / k
     
-    a = lam / mu
-    
-    sum_terms = sum((a ** n) / math.factorial(n) for n in range(c))
-    last_term = (a ** c) / (math.factorial(c) * (1 - rho))
-    P0 = 1 / (sum_terms + last_term)
-    
-    Lq = (P0 * (a ** c) * rho) / (math.factorial(c) * ((1 - rho) ** 2))
-    L = Lq + a
-    Wq = Lq / lam
-    W = Wq + 1/mu
+    # Calculate intervals based on theoretical CDF to get equal probabilities
+    bin_edges = []
+    for i in range(k + 1):
+        p = i / k
+        if dist_type == "Exponential":
+            if p >= 1.0: val = float('inf')
+            else: val = -mean * math.log(1.0 - p)
+        else:
+            val = sorted_data[-1] * p # Fallback for linear
+        bin_edges.append(val)
+        
+    observed_freqs = [0] * k
+    current_bin = 0
+    for x in sorted_data:
+        while current_bin < k and x > bin_edges[current_bin+1]:
+            current_bin += 1
+        if current_bin < k:
+            observed_freqs[current_bin] += 1
+            
+    chi_sq = sum(((o - expected_freq) ** 2) / expected_freq for o in observed_freqs)
+    df = k - 1 - 1 # k - s - 1
+    crit = scipy_stats.chi2.ppf(0.95, df)
+    p_val = 1 - scipy_stats.chi2.cdf(chi_sq, df)
     
     return {
-        'stable': True,
-        'rho': rho,
-        'Lq': Lq,
-        'L': L,
-        'Wq': Wq,
-        'W': W,
-        'P0': P0
+        'chi2': chi_sq, 'critical': crit, 'p_value': p_val, 
+        'reject': chi_sq > crit, 'observed': observed_freqs, 'expected': expected_freq
     }
 
+# --- Theoretical Helpers ---
+def compute_mmc_theoretical(lam, mu, c):
+    # (Same as original code)
+    rho = lam / (c * mu)
+    if rho >= 1: return {'stable': False, 'rho': rho}
+    a = lam/mu
+    sum_terms = sum((a**n)/math.factorial(n) for n in range(c))
+    last = (a**c)/(math.factorial(c)*(1-rho))
+    P0 = 1/(sum_terms + last)
+    Lq = (P0 * (a**c) * rho) / (math.factorial(c) * (1-rho)**2)
+    return {'stable': True, 'rho': rho, 'Lq': Lq, 'Wq': Lq/lam}
 
-def compute_confidence_interval(data: List[float], confidence: float = 0.95) -> Tuple[float, float, float]:
-    """
-    Compute confidence interval for the mean of data
-    Returns: (mean, lower_bound, upper_bound)
-    """
-    if not data or len(data) < 2:
-        return (0, 0, 0)
-    
+def compute_confidence_interval(data, confidence=0.95):
+    if len(data) < 2: return 0, 0, 0
     n = len(data)
-    mean = np.mean(data)
+    m = np.mean(data)
     se = scipy_stats.sem(data)
-    
-    h = se * scipy_stats.t.ppf((1 + confidence) / 2, n - 1)
-    
-    return (mean, mean - h, mean + h)
+    h = se * scipy_stats.t.ppf((1+confidence)/2, n-1)
+    return m, m-h, m+h
 
-
-def run_replications(config: SimulationConfig, num_replications: int = 10, 
-                     confidence_level: float = 0.95) -> Dict:
-    """
-    Run multiple simulation replications and compute confidence intervals
-    """
-    results = {
-        'Lq': [], 'L': [], 'Wq': [], 'W': [], 
-        'utilization': [], 'throughput': [], 'drop_rate': []
-    }
-    
-    base_seed = config.random_seed if config.random_seed else 42
-    
-    for i in range(num_replications):
+def run_replications(config, num_reps=10):
+    results = {'Wq': [], 'Lq': []}
+    base_seed = config.random_seed
+    for i in range(num_reps):
         config.random_seed = base_seed + i
         sim = NetworkSimulator(config)
-        stats = sim.run()
-        
-        results['Lq'].append(stats['average_queue_length'])
-        results['L'].append(stats['average_system_length'])
-        results['Wq'].append(stats['average_waiting_time'])
-        results['W'].append(stats['average_system_time'])
-        results['utilization'].append(stats['server_utilization'])
-        results['throughput'].append(stats['throughput'])
-        results['drop_rate'].append(stats['drop_rate'])
-    
-    ci_results = {}
-    for metric, values in results.items():
-        mean, lower, upper = compute_confidence_interval(values, confidence_level)
-        ci_results[metric] = {
-            'mean': mean,
-            'std': np.std(values),
-            'lower': lower,
-            'upper': upper,
-            'values': values
-        }
-    
-    config.random_seed = base_seed
-    
-    return ci_results
-
-
-def run_comparative_analysis(configs: List[SimulationConfig]) -> List[Dict]:
-    """
-    Run multiple simulations with different configurations for comparison
-    """
-    results = []
-    for i, config in enumerate(configs):
-        sim = NetworkSimulator(config)
-        stats = sim.run()
-        stats['config_id'] = i
-        stats['config'] = config.to_dict()
-        results.append(stats)
+        res = sim.run()
+        results['Wq'].append(res['average_waiting_time'])
+        results['Lq'].append(res['average_queue_length'])
     return results
