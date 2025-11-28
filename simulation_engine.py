@@ -548,3 +548,45 @@ def run_replications(config, num_reps=10):
         results['Wq'].append(res['average_waiting_time'])
         results['Lq'].append(res['average_queue_length'])
     return results
+# --- Theoretical Helpers & Validation (Ensure these are at the bottom of simulation_engine.py) ---
+
+def compute_mmc_theoretical(lam: float, mu: float, c: int) -> Dict:
+    """Calculates theoretical values for M/M/c queue"""
+    rho = lam / (c * mu)
+    if rho >= 1:
+        return {'stable': False, 'rho': rho, 'Lq': 0, 'Wq': 0}
+    
+    # Calculate P0
+    sum_terms = sum(((lam/mu)**n) / math.factorial(n) for n in range(c))
+    last_term = ((lam/mu)**c) / (math.factorial(c) * (1 - rho))
+    P0 = 1 / (sum_terms + last_term)
+    
+    # Calculate Lq, Wq
+    Lq = (P0 * ((lam/mu)**c) * rho) / (math.factorial(c) * ((1 - rho)**2))
+    Wq = Lq / lam
+    
+    return {'stable': True, 'rho': rho, 'Lq': Lq, 'Wq': Wq}
+
+def compute_confidence_interval(data: List[float], confidence: float = 0.95) -> Tuple[float, float, float]:
+    """Calculates CI for a list of numbers"""
+    if len(data) < 2: return 0.0, 0.0, 0.0
+    n = len(data)
+    m = np.mean(data)
+    se = scipy_stats.sem(data)
+    h = se * scipy_stats.t.ppf((1 + confidence) / 2, n - 1)
+    return m, m - h, m + h
+
+def run_replications(config: SimulationConfig, num_reps: int = 10) -> Dict:
+    """Runs multiple simulation replications for statistical validation"""
+    results = {'Wq': [], 'Lq': []}
+    base_seed = config.random_seed if config.random_seed else 12345
+    
+    for i in range(num_reps):
+        # Vary seed for independence
+        config.random_seed = base_seed + i * 1000
+        sim = NetworkSimulator(config)
+        res = sim.run()
+        results['Wq'].append(res['average_waiting_time'])
+        results['Lq'].append(res['average_queue_length'])
+        
+    return results
