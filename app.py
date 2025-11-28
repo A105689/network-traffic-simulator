@@ -6,8 +6,7 @@ Features:
 - Comparative Analysis
 - Statistical Validation
 
-ADEL2025
-
+Run with: streamlit run app.py
 """
 
 import streamlit as st
@@ -80,6 +79,11 @@ def get_distribution_params(prefix: str, dist_type: DistributionType, default_ra
         params['mean'] = st.slider(f"{prefix} μ (log-mean)", -2.0, 2.0, np.log(1/default_rate), 0.1, key=f"{prefix}_mean")
         params['std'] = st.slider(f"{prefix} σ (log-std)", 0.1, 2.0, 0.5, 0.1, key=f"{prefix}_std")
     
+    elif dist_type == DistributionType.POISSON:
+        # Poisson parameter Lambda (λ) is technically the mean
+        params['mean'] = st.slider(f"{prefix} Lambda (λ)", 0.1, 50.0, default_rate, 0.1, key=f"{prefix}_lambda")
+        params['rate'] = params['mean'] # Used for traffic intensity approximation
+
     # Fill defaults for unused
     defaults = {'rate': default_rate, 'mean': 1/default_rate, 'std': 0.05, 'min': 0.1, 'max': 0.3, 'shape': 2.0, 'scale': 1/default_rate}
     for k, v in defaults.items():
