@@ -462,14 +462,14 @@ class NetworkSimulator:
         return self.rng.generate(c.arrival_distribution, 
                                  rate=c.arrival_rate, mean=c.arrival_mean, std=c.arrival_std,
                                  min=c.arrival_min, max=c.arrival_max, shape=c.arrival_shape,
-                                 scale=c.arrival_scale)
+                                 scale=c.arrival_scale, lam=c.arrival_mean)
 
     def generate_service_time(self) -> float:
         c = self.config
         return self.rng.generate(c.service_distribution,
                                  rate=c.service_rate, mean=c.service_mean, std=c.service_std,
                                  min=c.service_min, max=c.service_max, shape=c.service_shape,
-                                 scale=c.service_scale)
+                                 scale=c.service_scale, lam=c.service_mean)
 
     def compute_statistics(self) -> Dict:
         """Compute comprehensive statistics (Restored from _00)"""
