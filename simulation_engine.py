@@ -1,9 +1,7 @@
 """
 Network Traffic Simulation Engine using Event-Scheduling Approach
-Discrete Event Simulation for SWE627 Course
+Discrete Event Simulation for Probability Course
 Supports M/M/1 and M/M/c queuing systems with multiple distributions
-
-ADEL2025
 """
 
 import heapq
@@ -189,7 +187,7 @@ class RandomGenerator:
             return self.rng.lognormal(mean, sigma)
 
         elif dist_type == DistributionType.POISSON:
-            lam = params.get('lambda', 1.0)
+            lam = params.get('lam', 1.0)  # Changed from 'lambda' to 'lam'
             # Poisson returns integers; ensure we don't return 0.0 for time durations
             val = float(self.rng.poisson(lam))
             return max(0.001, val)
@@ -294,7 +292,7 @@ class NetworkSimulator:
             return self.rng.generate(DistributionType.LOGNORMAL,
                                      mean=config.arrival_mean, std=config.arrival_std)
         elif config.arrival_distribution == DistributionType.POISSON:
-            return self.rng.generate(DistributionType.POISSON, lambda=config.arrival_mean)
+            return self.rng.generate(DistributionType.POISSON, lam=config.arrival_mean) # Changed lambda= to lam=
         else:
             return self.rng.generate(DistributionType.EXPONENTIAL, rate=config.arrival_rate)
     
@@ -319,7 +317,7 @@ class NetworkSimulator:
             return self.rng.generate(DistributionType.LOGNORMAL,
                                      mean=config.service_mean, std=config.service_std)
         elif config.service_distribution == DistributionType.POISSON:
-            return self.rng.generate(DistributionType.POISSON, lambda=config.service_mean)
+            return self.rng.generate(DistributionType.POISSON, lam=config.service_mean) # Changed lambda= to lam=
         else:
             return self.rng.generate(DistributionType.EXPONENTIAL, rate=config.service_rate)
     
