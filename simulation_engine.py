@@ -5,6 +5,7 @@ Features:
 - Inverse Transform Method for variate generation
 - Warm-up/Data Deletion support
 - Comparative Analysis Tools
+- SimPy Validation
 """
 
 import heapq
@@ -16,6 +17,14 @@ import pandas as pd
 from scipy import stats as scipy_stats
 import math
 import json
+import random
+
+# Try to import simpy, but don't crash if missing (for students who haven't installed it)
+try:
+    import simpy
+    SIMPY_AVAILABLE = True
+except ImportError:
+    SIMPY_AVAILABLE = False
 
 class EventType(Enum):
     """Types of events in the network simulation"""
@@ -515,6 +524,79 @@ class NetworkSimulator:
             'server_stats': self.get_server_stats_dataframe().to_dict(orient='records')
         }
         return json.dumps(export_data, indent=2, default=str)
+
+# --- SIMPY VALIDATION HELPERS ---
+if SIMPY_AVAILABLE:
+    class SimPyModel:
+        def __init__(self, arr_rate, svc_rate, max_time):
+            self.env = simpy.Environment()
+            self.server = simpy.Resource(self.env, capacity=1)
+            self.arr_rate = arr_rate
+            self.svc_rate = svc_rate
+            self.max_time = max_time
+            self.wait_times = []
+            
+            # Use same seed to be fair with internal engine
+            random.seed(42) 
+
+        def packet_generator(self):
+            i = 0
+            while True:
+                # Interarrival
+                yield self.env.timeout(random.expovariate(self.arr_rate))
+                i += 1
+                self.env.process(self.packet_process(f'Packet {i}'))
+
+        def packet_process(self, name):
+            arrival_time = self.env.now
+            
+            # Request Server
+            with self.server.request() as request:
+                yield request # Wait in queue
+                
+                # Service Start
+                wait = self.env.now - arrival_time
+                self.wait_times.append(wait)
+                
+                # Service Duration
+                yield self.env.timeout(random.expovariate(self.svc_rate))
+
+        def run(self):
+            self.env.process(self.packet_generator())
+            self.env.run(until=self.max_time)
+            return np.mean(self.wait_times) if self.wait_times else 0.0
+
+def run_head_to_head_validation(arr_rate=4.0, svc_rate=5.0, time=50000.0) -> Dict:
+    """Runs comparison between Custom Engine and SimPy"""
+    # 1. Theoretical Result
+    rho = arr_rate / svc_rate
+    if rho >= 1: 
+        return {"error": "System Unstable (Rho >= 1)"}
+    theo_wq = arr_rate / (svc_rate * (svc_rate - arr_rate))
+    
+    # 2. Run Custom
+    # Use random_seed=42 for fairness in comparison logic
+    custom_cfg = SimulationConfig(
+        arrival_rate=arr_rate, service_rate=svc_rate, simulation_time=time, 
+        num_servers=1, random_seed=42, use_lcg=False # Use numpy for fair comparison with SimPy
+    )
+    custom_sim = NetworkSimulator(custom_cfg)
+    custom_stats = custom_sim.run()
+    custom_wq = custom_stats['average_waiting_time']
+    
+    # 3. Run SimPy
+    simpy_wq = 0.0
+    if SIMPY_AVAILABLE:
+        simpy_model = SimPyModel(arr_rate, svc_rate, time)
+        simpy_wq = simpy_model.run()
+    
+    return {
+        "theoretical_wq": theo_wq,
+        "custom_wq": custom_wq,
+        "simpy_wq": simpy_wq,
+        "simpy_available": SIMPY_AVAILABLE,
+        "diff": abs(custom_wq - simpy_wq)
+    }
 
 def compute_mmc_theoretical(lam: float, mu: float, c: int) -> Dict:
     rho = lam / (c * mu)
