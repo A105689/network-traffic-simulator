@@ -4,7 +4,7 @@ Features:
 - LCG RNG (Linear Congruential Generator) for reproducibility
 - Inverse Transform Method for variate generation
 - Warm-up/Data Deletion support
-- Detailed Chi-Square goodness-of-fit reporting
+- Comparative Analysis Tools
 """
 
 import heapq
@@ -21,16 +21,13 @@ class EventType(Enum):
     """Types of events in the network simulation"""
     ARRIVAL = "ARRIVAL"
     DEPARTURE = "DEPARTURE"
-    WARMUP_END = "WARMUP_END"  # For data deletion initialization
+    WARMUP_END = "WARMUP_END"
 
 class DistributionType(Enum):
     """Supported probability distributions"""
     EXPONENTIAL = "Exponential"
     NORMAL = "Normal"
     UNIFORM = "Uniform"
-    WEIBULL = "Weibull"
-    GAMMA = "Gamma"
-    LOGNORMAL = "Log-normal"
     POISSON = "Poisson"
 
 # --- CORE COMPONENT: Linear Congruential Generator ---
@@ -212,22 +209,6 @@ class RandomGenerator:
                 return float(k - 1)
             else:
                 return float(self.np_rng.poisson(lam))
-        
-        # Fallback to numpy for others
-        elif dist_type == DistributionType.WEIBULL:
-            shape = params.get('shape', 2.0)
-            scale = params.get('scale', 1.0)
-            return scale * self.np_rng.weibull(shape)
-        
-        elif dist_type == DistributionType.GAMMA:
-            shape = params.get('shape', 2.0)
-            scale = params.get('scale', 1.0)
-            return self.np_rng.gamma(shape, scale)
-            
-        elif dist_type == DistributionType.LOGNORMAL:
-            mean = params.get('mean', 0.0)
-            sigma = params.get('std', 1.0)
-            return self.np_rng.lognormal(mean, sigma)
             
         return 1.0
 
@@ -293,7 +274,6 @@ class NetworkSimulator:
         
     def update_statistics(self, new_time: float):
         time_delta = new_time - self.state.last_event_time
-        # Statistics collection is handled during run(), but accumulated here
         self.state.area_under_queue += self.state.queue_length() * time_delta
         self.state.area_under_system += self.state.packets_in_system() * time_delta
         self.state.last_event_time = new_time
@@ -336,7 +316,6 @@ class NetworkSimulator:
         self.event_log.append(entry)
         
         if not self.state.in_warmup:
-            # Calculate Running Average Lq for visualization
             current_duration = self.state.clock - self.config.warmup_time
             running_avg_lq = 0.0
             if current_duration > 0:
@@ -537,65 +516,6 @@ class NetworkSimulator:
         }
         return json.dumps(export_data, indent=2, default=str)
 
-# --- Analysis Functions ---
-def perform_chi_square_test(observed_data: List[float], dist_type: str, mean: float) -> Dict:
-    """
-    Input Analysis: Chi-Square Goodness of Fit (Enhanced)
-    Returns detailed binning data for plotting
-    """
-    n = len(observed_data)
-    if n < 5: return {'error': 'Insufficient data (need n >= 5)'}
-    
-    # Square root rule for bin count
-    k = max(5, int(np.sqrt(n))) 
-    sorted_data = sorted(observed_data)
-    expected_count_per_bin = n / k  # Equal probability bins approach
-    
-    bin_edges = []
-    # Create Equal Probability Bins based on Theoretical CDF
-    # For Exponential: CDF(x) = 1 - e^(-lambda * x)
-    # We want P(x in bin i) = 1/k
-    for i in range(k + 1):
-        p = i / k
-        if dist_type == "Exponential":
-            if p >= 1.0: 
-                val = float('inf')
-            else: 
-                # Inverse CDF: x = -ln(1-p) * mean
-                val = -mean * math.log(1.0 - p)
-        else:
-            val = sorted_data[-1] * p # Fallback for linear
-        bin_edges.append(val)
-        
-    observed_counts = [0] * k
-    current_bin = 0
-    # Bin the observed data
-    for x in sorted_data:
-        while current_bin < k and x > bin_edges[current_bin+1]:
-            current_bin += 1
-        if current_bin < k:
-            observed_counts[current_bin] += 1
-            
-    # Compute Chi-Square Statistic
-    chi_sq = sum(((o - expected_count_per_bin) ** 2) / expected_count_per_bin for o in observed_counts)
-    
-    # Degrees of Freedom: k - 1 (bins) - 1 (estimated parameter: mean) = k - 2
-    df = max(1, k - 2)
-    crit = scipy_stats.chi2.ppf(0.95, df)
-    p_val = 1 - scipy_stats.chi2.cdf(chi_sq, df)
-    
-    return {
-        'chi2': chi_sq, 
-        'critical': crit, 
-        'p_value': p_val, 
-        'reject': chi_sq > crit, 
-        'observed': observed_counts,
-        'expected': [expected_count_per_bin] * k,
-        'bin_edges': bin_edges,
-        'df': df,
-        'num_bins': k
-    }
-
 def compute_mmc_theoretical(lam: float, mu: float, c: int) -> Dict:
     rho = lam / (c * mu)
     if rho >= 1:
@@ -644,5 +564,7 @@ def run_comparative_analysis(configs: List[SimulationConfig]) -> List[Dict]:
         sim = NetworkSimulator(cfg)
         res = sim.run()
         res.update(cfg.to_dict())
+        # Attach time series for plotting in Comparative Mode
+        res['time_series_df'] = sim.get_time_series_dataframe()
         results.append(res)
     return results
