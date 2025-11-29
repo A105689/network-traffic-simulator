@@ -5,7 +5,6 @@ Updates:
 - Added "Convergence" explainer in results.
 - Fixed Poisson parameter visibility.
 """
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -46,6 +45,8 @@ with st.expander("📘 Concept Guide: Why do simulated results vary?"):
     **2. Stochastic Variation:**
     * M/M/1 systems are highly variable. Short runs (e.g., Time=100) are like rolling a die 5 times; the average might not be 3.5.
     * *Fix:* Use **Statistical Validation** mode to average 20+ runs.
+    
+    
     """)
 
 st.markdown("---")
@@ -107,12 +108,11 @@ if mode == "Single Simulation":
                 lcg_params['c'] = lcg_c2.number_input("c", 0, value=0)
                 lcg_params['m'] = lcg_c3.number_input("m", 1, value=2147483647)
             
-            warmup_time = st.number_input("Warm-up (T0)", 0.0, 500.0, 0.0, help="Initial period to discard to remove bias.")
+            warmup_time = st.number_input("Warm-up (T0)", 0.0, 500.0, 20.0, help="Initial period to discard to remove bias.")
             random_seed = st.number_input("Random Seed", 1, 99999, 42)
         
         st.subheader("System Configuration")
         num_servers = st.number_input("Servers (c)", 1, 50, 1)
-        # UPDATED DEFAULT: 1000.0 instead of 100.0 for better convergence
         sim_time = st.number_input("Sim Time", 10.0, 10000.0, 1000.0, help="Longer time = Better convergence to theoretical values.")
         capacity = st.number_input("Queue Cap (0=Inf)", 0, 1000, 50)
         
@@ -178,9 +178,30 @@ if mode == "Single Simulation":
         with tab1:
             ts_df = sim.get_time_series_dataframe()
             if not ts_df.empty:
-                st.subheader("System Dynamics")
-                fig_ts = px.line(ts_df, x='time', y=['queue_length', 'servers_busy'], 
-                                title="Queue Length & Busy Servers Over Time")
+                st.subheader("System Dynamics & Convergence")
+                
+                # Plot with Dual Y-axis or Overlay
+                fig_ts = make_subplots(specs=[[{"secondary_y": True}]])
+                
+                # 1. Queue Length (Gray area)
+                fig_ts.add_trace(go.Scatter(
+                    x=ts_df['time'], y=ts_df['queue_length'], 
+                    name="Instant Queue Length", mode='lines', line=dict(color='rgba(100,100,100,0.3)')
+                ), secondary_y=False)
+                
+                # 2. Running Average (Red line)
+                fig_ts.add_trace(go.Scatter(
+                    x=ts_df['time'], y=ts_df['running_avg_lq'], 
+                    name="Running Avg (Lq)", mode='lines', line=dict(color='red', width=3)
+                ), secondary_y=False)
+                
+                # 3. Theoretical Line (if applicable)
+                if arr_dist == "Exponential" and svc_dist == "Exponential":
+                    theo = compute_mmc_theoretical(arr_params['rate'], svc_params['rate'], num_servers)
+                    if theo['stable']:
+                        fig_ts.add_hline(y=theo['Lq'], line_dash="dash", line_color="blue", annotation_text=f"Theory: {theo['Lq']:.2f}")
+
+                fig_ts.update_layout(title="Queue Length vs Running Average", xaxis_title="Time", yaxis_title="Queue Length")
                 st.plotly_chart(fig_ts, use_container_width=True)
             
             c_viz1, c_viz2 = st.columns(2)
@@ -225,8 +246,8 @@ if mode == "Single Simulation":
                     st.dataframe(comp_df, hide_index=True)
                     
                     # EDUCATIONAL TIP
-                    if sim_time < 500 and abs(stats['average_waiting_time']-theo['Wq']) > 0.05:
-                        st.info("💡 **Tip:** Your simulated result differs from theory. Try increasing **Simulation Time** (>1000) or enabling **Warm-up** to reduce initialization bias.")
+                    if sim_time < 500 and abs(stats['average_queue_length']-theo['Lq']) > 0.1:
+                        st.info("💡 **Why the difference?** Short simulations have high variance. Look at the **Running Avg** line in the Visualization tab. Does it settle?")
                 else:
                     st.error("Theoretical System Unstable (Rho >= 1)")
             else:
