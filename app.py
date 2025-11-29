@@ -280,28 +280,88 @@ if mode == "Single Simulation":
 # ==========================================
 elif mode == "Comparative Analysis":
     st.header("Compare Configurations")
+    st.markdown("Compare how **Servers**, **Distributions (Variance)**, and **Queue Capacity** affect performance.")
+
+    # Global settings for fair comparison
+    with st.expander("Global Simulation Settings", expanded=False):
+        lam = st.number_input("Common Arrival Rate (λ)", 0.1, 50.0, 5.0, help="Average arrivals per second (Poisson)")
+        sim_time_comp = st.number_input("Simulation Time", 100.0, 10000.0, 1000.0, help="Duration of simulation")
+
     col_a, col_b = st.columns(2)
-    with col_a:
-        st.subheader("System A")
-        s_a = st.number_input("Servers A", 1, 10, 1)
-        r_a = st.number_input("Service Rate A", 0.1, 20.0, 8.0)
-    with col_b:
-        st.subheader("System B")
-        s_b = st.number_input("Servers B", 1, 10, 2)
-        r_b = st.number_input("Service Rate B", 0.1, 20.0, 4.0)
-    lam = st.number_input("Common Arrival Rate", 1.0, 20.0, 5.0)
+
+    def config_ui_column(col, name, key_suffix):
+        with col:
+            st.subheader(name)
+            # 1. Servers
+            num_s = st.number_input("Servers", 1, 50, 1, key=f"srv_{key_suffix}")
+            # 2. Capacity
+            q_cap = st.number_input("Queue Capacity", 0, 5000, 50, key=f"cap_{key_suffix}", help="0 = Infinite")
+            
+            # 3. Variance / Distribution
+            dist_opt = st.selectbox("Service Distribution", 
+                                  ["Exponential (High Variance)", "Uniform (Medium Variance)", "Deterministic (No Variance)"], 
+                                  key=f"dist_{key_suffix}")
+            
+            if "Exponential" in dist_opt:
+                mu = st.number_input("Service Rate (μ)", 0.1, 50.0, 8.0, key=f"mu_{key_suffix}")
+                return SimulationConfig(
+                    num_servers=num_s, queue_capacity=q_cap, simulation_time=sim_time_comp,
+                    arrival_rate=lam, service_distribution=DistributionType.EXPONENTIAL, service_rate=mu
+                )
+            elif "Uniform" in dist_opt:
+                mean_s = st.number_input("Mean Service Time", 0.01, 2.0, 0.125, key=f"mean_{key_suffix}")
+                spread = st.slider("Spread (%)", 0, 100, 20, key=f"spread_{key_suffix}", help="Range around mean")
+                half_width = mean_s * (spread/100)
+                return SimulationConfig(
+                    num_servers=num_s, queue_capacity=q_cap, simulation_time=sim_time_comp,
+                    arrival_rate=lam, service_distribution=DistributionType.UNIFORM, 
+                    service_min=mean_s-half_width, service_max=mean_s+half_width
+                )
+            else: # Deterministic
+                mean_s = st.number_input("Constant Service Time", 0.01, 2.0, 0.125, key=f"const_{key_suffix}")
+                return SimulationConfig(
+                    num_servers=num_s, queue_capacity=q_cap, simulation_time=sim_time_comp,
+                    arrival_rate=lam, service_distribution=DistributionType.NORMAL, 
+                    service_mean=mean_s, service_std=0.000001 # Practically deterministic
+                )
+
+    cfg_a = config_ui_column(col_a, "System A", "A")
+    cfg_b = config_ui_column(col_b, "System B", "B")
     
-    if st.button("Run Comparison"):
-        cfg_a = SimulationConfig(num_servers=s_a, service_rate=r_a, arrival_rate=lam)
-        cfg_b = SimulationConfig(num_servers=s_b, service_rate=r_b, arrival_rate=lam)
-        res = run_comparative_analysis([cfg_a, cfg_b])
+    if st.button("Run Comparison", type="primary"):
+        with st.spinner("Running simulations..."):
+            res = run_comparative_analysis([cfg_a, cfg_b])
         
-        metrics = ['average_queue_length', 'average_waiting_time', 'server_utilization']
-        names = ['Avg Queue (Lq)', 'Avg Wait (Wq)', 'Utilization (ρ)']
-        fig = make_subplots(rows=1, cols=3, subplot_titles=names)
+        # Visualization
+        metrics = ['average_queue_length', 'average_waiting_time', 'server_utilization', 'drop_rate']
+        names = ['Avg Queue (Lq)', 'Avg Wait (Wq)', 'Utilization (ρ)', 'Drop Rate (%)']
+        
+        # Adjust data for plotting (convert drop rate to %)
+        res[0]['drop_rate'] = res[0]['drop_rate'] * 100
+        res[1]['drop_rate'] = res[1]['drop_rate'] * 100
+        
+        fig = make_subplots(rows=1, cols=4, subplot_titles=names)
+        
+        colors = ['#1f77b4', '#ff7f0e'] # Blue, Orange
+        
         for i, m in enumerate(metrics):
-            fig.add_trace(go.Bar(x=['System A', 'System B'], y=[res[0][m], res[1][m]], name=names[i]), row=1, col=i+1)
+            fig.add_trace(go.Bar(
+                x=['System A', 'System B'], 
+                y=[res[0][m], res[1][m]], 
+                name=names[i],
+                marker_color=colors,
+                showlegend=False
+            ), row=1, col=i+1)
+            
         st.plotly_chart(fig, use_container_width=True)
+        
+        # Data table for detailed inspection
+        st.caption("Detailed Metrics")
+        st.dataframe(pd.DataFrame({
+            "Metric": names,
+            "System A": [res[0]['average_queue_length'], res[0]['average_waiting_time'], res[0]['server_utilization'], res[0]['drop_rate']],
+            "System B": [res[1]['average_queue_length'], res[1]['average_waiting_time'], res[1]['server_utilization'], res[1]['drop_rate']]
+        }), hide_index=True)
 
 # ==========================================
 # MODE 3: STATISTICAL VALIDATION
