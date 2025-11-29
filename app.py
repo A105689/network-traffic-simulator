@@ -1,12 +1,12 @@
 """
-Network Traffic Simulation - Educational Version (Final)
+SWE627 Network Traffic Simulation - Educational Version (Final)
 Features: 
 - Modes: Single Sim, Comparative, Statistical Validation
 - Educational Features: Concept Guide, Poisson Warning, Convergence Graphs
 - Simplified Distributions (Exponential, Normal, Uniform, Poisson)
 - SimPy Engine Verification Mode (Single + Sweep)
 
-Run with: streamlit run app.py
+Adel2025
 """
 
 import streamlit as st
