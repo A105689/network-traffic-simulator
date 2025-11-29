@@ -1,11 +1,14 @@
 """
-Network Traffic Simulation Engine (Educational Edition)
+SWE627 Network Traffic Simulation Engine (Educational Edition)
 Features: 
 - LCG RNG (Linear Congruential Generator) for reproducibility
 - Inverse Transform Method for variate generation
 - Warm-up/Data Deletion support
 - Comparative Analysis Tools
 - SimPy Validation Suite (Multi-Distribution)
+
+back-end
+Adel2025
 """
 
 import heapq
