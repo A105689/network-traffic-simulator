@@ -96,6 +96,9 @@ class SimulationConfig:
     """Configuration parameters for the simulation"""
     # RNG & Warmup
     use_lcg: bool = False
+    lcg_a: int = 16807      # Multiplier
+    lcg_c: int = 0          # Increment
+    lcg_m: int = 2147483647 # Modulus
     warmup_time: float = 0.0
     random_seed: Optional[int] = 42
     
@@ -153,7 +156,13 @@ class RandomGenerator:
         self.config = config
         self.np_rng = np.random.default_rng(config.random_seed)
         if config.use_lcg:
-            self.lcg = LCG(config.random_seed if config.random_seed else 12345)
+            # Pass custom LCG parameters from config
+            self.lcg = LCG(
+                seed=config.random_seed if config.random_seed else 12345,
+                a=config.lcg_a,
+                c=config.lcg_c,
+                m=config.lcg_m
+            )
     
     def _get_u01(self) -> float:
         """Get Uniform(0,1) from selected source"""
@@ -189,6 +198,20 @@ class RandomGenerator:
                 return max(0.001, mean + z * std)
             else:
                 return max(0.001, self.np_rng.normal(mean, std))
+                
+        elif dist_type == DistributionType.POISSON:
+            lam = params.get('lam', 1.0)
+            if self.config.use_lcg:
+                # Knuth's algorithm for Poisson
+                L = math.exp(-lam)
+                k = 0
+                p = 1.0
+                while p > L:
+                    k += 1
+                    p *= self._get_u01()
+                return float(k - 1)
+            else:
+                return float(self.np_rng.poisson(lam))
         
         # Fallback to numpy for others but still respected config params
         elif dist_type == DistributionType.WEIBULL:
