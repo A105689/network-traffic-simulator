@@ -4,6 +4,7 @@ Features:
 - Concept Guides & Tooltips
 - Transparent Chi-Square Analysis
 - Academic Rigor (LCG, Warm-up)
+- Poisson Logic Explanation
 
 Run with: streamlit run app.py
 """
@@ -77,21 +78,34 @@ mode = st.sidebar.radio(
 # --- Helper: Distribution Widget ---
 def get_distribution_params(prefix: str, dist_type: DistributionType, default_rate: float = 5.0):
     params = {}
+    
     if dist_type == DistributionType.EXPONENTIAL:
         params['rate'] = st.slider(f"{prefix} Rate (λ)", 0.1, 50.0, default_rate, 0.1, key=f"{prefix}_rate", help="Average number of events per time unit.")
         params['mean'] = 1/params['rate']
+        
     elif dist_type == DistributionType.NORMAL:
-        params['mean'] = st.slider(f"{prefix} Mean", 0.01, 2.0, 1/default_rate, 0.01, key=f"{prefix}_mean")
+        params['mean'] = st.slider(f"{prefix} Mean (s)", 0.01, 2.0, 1/default_rate, 0.01, key=f"{prefix}_mean")
         params['std'] = st.slider(f"{prefix} Std Dev", 0.001, 0.5, 0.05, 0.001, key=f"{prefix}_std")
         params['rate'] = 1/params['mean']
+        
     elif dist_type == DistributionType.UNIFORM:
-        params['min'] = st.slider(f"{prefix} Min", 0.01, 1.0, 0.1, 0.01, key=f"{prefix}_min")
-        params['max'] = st.slider(f"{prefix} Max", 0.02, 2.0, 0.3, 0.01, key=f"{prefix}_max")
+        params['min'] = st.slider(f"{prefix} Min (s)", 0.01, 1.0, 0.1, 0.01, key=f"{prefix}_min")
+        params['max'] = st.slider(f"{prefix} Max (s)", 0.02, 2.0, 0.3, 0.01, key=f"{prefix}_max")
         params['mean'] = (params['min'] + params['max']) / 2
         params['rate'] = 1/params['mean']
+        
     elif dist_type == DistributionType.POISSON:
-        params['mean'] = st.slider(f"{prefix} Lambda (λ)", 0.1, 50.0, default_rate, 0.1, key=f"{prefix}_lambda", help="Mean number of events occurring in the interval.")
-        params['rate'] = params['mean']
+        # EDUCATIONAL WARNING FOR POISSON
+        st.warning(
+            f"⚠️ **Caution:** You selected Poisson for **{prefix}**. \n"
+            "This generates the **Duration (Time)** from a Poisson distribution, not the Rate. \n"
+            "• **Higher Lambda** = Longer Time = **Slower Rate**. \n"
+            "• To simulate standard 'Poisson Arrivals' (M/M/1), use **Exponential**."
+        )
+        params['mean'] = st.slider(f"{prefix} Mean Time (λ)", 0.1, 50.0, default_rate, 0.1, key=f"{prefix}_lambda")
+        # For Traffic Intensity calculation: Rate = 1 / Mean
+        params['rate'] = 1.0 / params['mean'] if params['mean'] > 0 else 0
+        params['lam'] = params['mean'] # Pass lambda to engine
     
     defaults = {'rate': default_rate, 'mean': 1/default_rate, 'std': 0.05, 'min': 0.1, 'max': 0.3, 'shape': 2.0, 'scale': 1/default_rate}
     for k, v in defaults.items():
