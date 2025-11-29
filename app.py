@@ -78,12 +78,11 @@ def get_distribution_params(prefix: str, dist_type: DistributionType, default_ra
     elif dist_type == DistributionType.LOGNORMAL:
         params['mean'] = st.slider(f"{prefix} μ (log-mean)", -2.0, 2.0, np.log(1/default_rate), 0.1, key=f"{prefix}_mean")
         params['std'] = st.slider(f"{prefix} σ (log-std)", 0.1, 2.0, 0.5, 0.1, key=f"{prefix}_std")
-    
+        
     elif dist_type == DistributionType.POISSON:
-        # Poisson parameter Lambda (λ) is technically the mean
         params['mean'] = st.slider(f"{prefix} Lambda (λ)", 0.1, 50.0, default_rate, 0.1, key=f"{prefix}_lambda")
         params['rate'] = params['mean'] # Used for traffic intensity approximation
-
+    
     # Fill defaults for unused
     defaults = {'rate': default_rate, 'mean': 1/default_rate, 'std': 0.05, 'min': 0.1, 'max': 0.3, 'shape': 2.0, 'scale': 1/default_rate}
     for k, v in defaults.items():
@@ -101,6 +100,16 @@ if mode == "Single Simulation":
         # --- NEW: Academic Requirements Section ---
         with st.expander("RNG & Initialization", expanded=True):
             use_lcg = st.checkbox("Use Custom LCG", True, help="Use Linear Congruential Generator instead of NumPy")
+            
+            # Default LCG params (Lewis, Goodman, Miller)
+            lcg_params = {'a': 16807, 'c': 0, 'm': 2147483647}
+            
+            if use_lcg:
+                lcg_c1, lcg_c2, lcg_c3 = st.columns(3)
+                lcg_params['a'] = lcg_c1.number_input("Multiplier (a)", 1, value=16807)
+                lcg_params['c'] = lcg_c2.number_input("Increment (c)", 0, value=0)
+                lcg_params['m'] = lcg_c3.number_input("Modulus (m)", 1, value=2147483647)
+            
             warmup_time = st.number_input("Warm-up Period (T0)", 0.0, 500.0, 0.0, help="Time to run before collecting stats")
             random_seed = st.number_input("Random Seed", 1, 99999, 42)
         
@@ -130,6 +139,9 @@ if mode == "Single Simulation":
         # Create Config
         cfg = SimulationConfig(
             use_lcg=use_lcg,
+            lcg_a=lcg_params['a'] if use_lcg else 16807,
+            lcg_c=lcg_params['c'] if use_lcg else 0,
+            lcg_m=lcg_params['m'] if use_lcg else 2147483647,
             warmup_time=warmup_time,
             random_seed=random_seed,
             num_servers=num_servers,
