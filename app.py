@@ -1,11 +1,9 @@
 """
-Network Traffic Simulation - Educational & Educational Friendly Version
-Features: 
-- Concept Guides & Tooltips
-- Transparent Chi-Square Analysis
-- Academic Rigor (LCG, Warm-up)
-
-Run with: streamlit run app.py
+Network Traffic Simulation - Educational Version 2.0
+Updates:
+- Increased default Simulation Time (100 -> 1000) for better convergence.
+- Added "Convergence" explainer in results.
+- Fixed Poisson parameter visibility.
 """
 
 import streamlit as st
@@ -38,29 +36,17 @@ st.title("Network Traffic Simulation 🎓")
 st.markdown("### Discrete Event Simulation (Event-Scheduling Approach)")
 
 # --- EDUCATIONAL: Concept Guide ---
-with st.expander("📘 Concept Guide: Click to learn the basics"):
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("""
-        **1. Kendall's Notation (A/B/c):**
-        * **A**: Arrival Process (e.g., **M** = Markovian/Exponential).
-        * **B**: Service Process (e.g., **M** = Markovian, **G** = General).
-        * **c**: Number of Servers.
-        
-        **2. Key Metrics:**
-        * $L_q$: Average number of packets in the **Queue**.
-        * $W_q$: Average time a packet waits in the **Queue**.
-        * $\\rho$ (Traffic Intensity): $\\lambda / (c \\cdot \\mu)$.
-        """)
-    with c2:
-        st.markdown("""
-        **3. Random Number Generation (RNG):**
-        * **LCG**: A formula $X_{i+1} = (aX_i + c) \mod m$ used to generate pseudo-random numbers.
-        
-        **4. Stability Condition:**
-        * If $\\rho \\ge 1$, the system is **unstable** (queue grows infinitely).
-        * If $\\rho < 1$, the system is **stable**.
-        """)
+with st.expander("📘 Concept Guide: Why do simulated results vary?"):
+    st.markdown("""
+    **1. Transient vs. Steady State:**
+    * Simulations start with **0 packets** (Transient State).
+    * Theoretical formulas assume the system has run forever (Steady State).
+    * *Fix:* Run the simulation longer (e.g., Time > 1000) or use a **Warm-up Period**.
+
+    **2. Stochastic Variation:**
+    * M/M/1 systems are highly variable. Short runs (e.g., Time=100) are like rolling a die 5 times; the average might not be 3.5.
+    * *Fix:* Use **Statistical Validation** mode to average 20+ runs.
+    """)
 
 st.markdown("---")
 
@@ -126,7 +112,8 @@ if mode == "Single Simulation":
         
         st.subheader("System Configuration")
         num_servers = st.number_input("Servers (c)", 1, 50, 1)
-        sim_time = st.number_input("Sim Time", 10.0, 10000.0, 100.0)
+        # UPDATED DEFAULT: 1000.0 instead of 100.0 for better convergence
+        sim_time = st.number_input("Sim Time", 10.0, 10000.0, 1000.0, help="Longer time = Better convergence to theoretical values.")
         capacity = st.number_input("Queue Cap (0=Inf)", 0, 1000, 50)
         
         st.markdown("---")
@@ -236,6 +223,10 @@ if mode == "Single Simulation":
                         ]
                     })
                     st.dataframe(comp_df, hide_index=True)
+                    
+                    # EDUCATIONAL TIP
+                    if sim_time < 500 and abs(stats['average_waiting_time']-theo['Wq']) > 0.05:
+                        st.info("💡 **Tip:** Your simulated result differs from theory. Try increasing **Simulation Time** (>1000) or enabling **Warm-up** to reduce initialization bias.")
                 else:
                     st.error("Theoretical System Unstable (Rho >= 1)")
             else:
