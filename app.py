@@ -367,20 +367,81 @@ elif mode == "Comparative Analysis":
 # MODE 3: STATISTICAL VALIDATION
 # ==========================================
 elif mode == "Statistical Validation":
-    st.header("Confidence Intervals")
-    st.markdown("Run multiple **Replications** to reduce variance and find the true mean.")
-    n_reps = st.number_input("Replications", 5, 100, 20)
-    conf = st.slider("Confidence Level", 0.8, 0.99, 0.95)
+    st.header("Confidence Intervals & Validation")
     
-    if st.button("Run Validation"):
-        cfg = SimulationConfig(num_servers=1, arrival_rate=4.0, service_rate=5.0)
-        with st.spinner("Running replications..."):
+    with st.expander("📘 What is this?", expanded=True):
+        st.markdown("""
+        **Why do we need this?**
+        One simulation run is just one "sample". If you run it again, you get a different result.
+        To trust our data, we run the simulation **N times (Replications)** and calculate an interval where the true mean likely lies.
+        
+        **Confidence Interval (CI):**
+        An estimated range of values which is likely to include an unknown population parameter (the true mean).
+        * *95% CI* means if we repeated this experiment 100 times, the true mean would be inside the calculated interval 95 times.
+        """)
+
+    col_conf, col_viz = st.columns([1, 2])
+
+    with col_conf:
+        st.subheader("Configuration")
+        n_reps = st.number_input("Replications (N)", 5, 200, 30, help="More reps = Narrower CI (More precision)")
+        conf = st.slider("Confidence Level", 0.80, 0.99, 0.95, help="Standard is 0.95")
+        
+        metric_to_validate = st.selectbox("Metric to Validate", ["Wait Time (Wq)", "Queue Length (Lq)", "Utilization (ρ)"], index=0)
+        
+        st.markdown("---")
+        st.markdown("**System Settings**")
+        v_servers = st.number_input("Servers", 1, 10, 1)
+        v_lam = st.number_input("Arrival Rate", 0.1, 20.0, 4.0)
+        v_mu = st.number_input("Service Rate", 0.1, 20.0, 5.0)
+        v_sim_time = st.number_input("Sim Time per Rep", 100.0, 5000.0, 500.0)
+
+    if st.button("Run Validation Analysis", type="primary"):
+        cfg = SimulationConfig(num_servers=v_servers, arrival_rate=v_lam, service_rate=v_mu, simulation_time=v_sim_time)
+        
+        with st.spinner(f"Running {n_reps} replications..."):
             res = run_replications(cfg, n_reps, conf)
+        
+        # Map selection to internal key
+        key_map = {"Wait Time (Wq)": "Wq", "Queue Length (Lq)": "Lq", "Utilization (ρ)": "utilization"}
+        sel_key = key_map[metric_to_validate]
+        data = res[sel_key]
+        
+        with col_viz:
+            st.subheader(f"Validation Results: {metric_to_validate}")
             
-        st.success(f"Wait Time CI: [{res['Wq']['lower']:.4f}, {res['Wq']['upper']:.4f}]")
-        fig = px.histogram(res['Wq']['values'], nbins=10, title="Distribution of Means")
-        fig.add_vline(x=res['Wq']['mean'], line_color='red')
-        st.plotly_chart(fig, use_container_width=True)
+            # KPI Cards
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Mean of Means", f"{data['mean']:.4f}")
+            k2.metric("CI Width (Precision)", f"± {(data['upper']-data['mean']):.4f}")
+            k3.metric("Standard Deviation", f"{data['std']:.4f}")
+            
+            st.success(f"**95% Confidence Interval:** [{data['lower']:.4f}, {data['upper']:.4f}]")
+            
+            # Graph 1: Scatter of Means
+            fig_scatter = go.Figure()
+            fig_scatter.add_trace(go.Scatter(
+                y=data['values'], 
+                mode='markers', 
+                name='Replication Result',
+                marker=dict(color='rgba(0, 100, 255, 0.6)', size=8)
+            ))
+            # Add Mean Line
+            fig_scatter.add_hline(y=data['mean'], line_color="red", line_width=2, annotation_text="Mean")
+            # Add CI Box
+            fig_scatter.add_hrect(y0=data['lower'], y1=data['upper'], line_width=0, fillcolor="red", opacity=0.1, annotation_text="95% CI Region")
+            
+            fig_scatter.update_layout(title="Variation Across Replications", xaxis_title="Replication ID", yaxis_title=metric_to_validate)
+            st.plotly_chart(fig_scatter, use_container_width=True)
+            
+            # Graph 2: Convergence (Educational)
+            # Calculate cumulative mean to show convergence
+            cumulative_means = [np.mean(data['values'][:i+1]) for i in range(len(data['values']))]
+            fig_conv = go.Figure()
+            fig_conv.add_trace(go.Scatter(y=cumulative_means, mode='lines', name='Cumulative Mean'))
+            fig_conv.add_hline(y=data['mean'], line_dash="dash", line_color="gray", annotation_text="Final Mean")
+            fig_conv.update_layout(title="Law of Large Numbers: Convergence of Mean", xaxis_title="Number of Replications Included", yaxis_title="Cumulative Mean")
+            st.plotly_chart(fig_conv, use_container_width=True)
 
 # ==========================================
 # MODE 4: INPUT ANALYSIS (ENHANCED)
