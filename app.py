@@ -24,8 +24,7 @@ from simulation_engine import (
     compute_mmc_theoretical,
     compute_confidence_interval,
     run_replications,
-    run_comparative_analysis,
-    perform_chi_square_test
+    run_comparative_analysis
 )
 
 st.set_page_config(
@@ -71,7 +70,7 @@ st.markdown("---")
 # --- Mode Selection ---
 mode = st.sidebar.radio(
     "Select Mode",
-    ["Single Simulation", "Comparative Analysis", "Statistical Validation", "Input Analysis (Goodness of Fit)"],
+    ["Single Simulation", "Comparative Analysis", "Statistical Validation"],
     index=0
 )
 
@@ -90,15 +89,6 @@ def get_distribution_params(prefix: str, dist_type: DistributionType, default_ra
         params['max'] = st.slider(f"{prefix} Max", 0.02, 2.0, 0.3, 0.01, key=f"{prefix}_max")
         params['mean'] = (params['min'] + params['max']) / 2
         params['rate'] = 1/params['mean']
-    elif dist_type == DistributionType.WEIBULL:
-        params['shape'] = st.slider(f"{prefix} Shape (k)", 0.5, 5.0, 2.0, 0.1, key=f"{prefix}_shape")
-        params['scale'] = st.slider(f"{prefix} Scale (λ)", 0.01, 2.0, 1/default_rate, 0.01, key=f"{prefix}_scale")
-    elif dist_type == DistributionType.GAMMA:
-        params['shape'] = st.slider(f"{prefix} Shape (k)", 0.5, 10.0, 2.0, 0.1, key=f"{prefix}_shape")
-        params['scale'] = st.slider(f"{prefix} Scale (θ)", 0.01, 1.0, 1/(default_rate * 2), 0.01, key=f"{prefix}_scale")
-    elif dist_type == DistributionType.LOGNORMAL:
-        params['mean'] = st.slider(f"{prefix} μ (log-mean)", -2.0, 2.0, np.log(1/default_rate), 0.1, key=f"{prefix}_mean")
-        params['std'] = st.slider(f"{prefix} σ (log-std)", 0.1, 2.0, 0.5, 0.1, key=f"{prefix}_std")
     elif dist_type == DistributionType.POISSON:
         params['mean'] = st.slider(f"{prefix} Lambda (λ)", 0.1, 50.0, default_rate, 0.1, key=f"{prefix}_lambda", help="Mean number of events occurring in the interval.")
         params['rate'] = params['mean']
@@ -332,7 +322,7 @@ elif mode == "Comparative Analysis":
         with st.spinner("Running simulations..."):
             res = run_comparative_analysis([cfg_a, cfg_b])
         
-        # Visualization
+        # 1. Bar Charts (Averages)
         metrics = ['average_queue_length', 'average_waiting_time', 'server_utilization', 'drop_rate']
         names = ['Avg Queue (Lq)', 'Avg Wait (Wq)', 'Utilization (ρ)', 'Drop Rate (%)']
         
@@ -340,8 +330,8 @@ elif mode == "Comparative Analysis":
         res[0]['drop_rate'] = res[0]['drop_rate'] * 100
         res[1]['drop_rate'] = res[1]['drop_rate'] * 100
         
+        st.subheader("1. Performance Metrics (Averages)")
         fig = make_subplots(rows=1, cols=4, subplot_titles=names)
-        
         colors = ['#1f77b4', '#ff7f0e'] # Blue, Orange
         
         for i, m in enumerate(metrics):
@@ -352,16 +342,37 @@ elif mode == "Comparative Analysis":
                 marker_color=colors,
                 showlegend=False
             ), row=1, col=i+1)
-            
         st.plotly_chart(fig, use_container_width=True)
         
-        # Data table for detailed inspection
-        st.caption("Detailed Metrics")
-        st.dataframe(pd.DataFrame({
-            "Metric": names,
-            "System A": [res[0]['average_queue_length'], res[0]['average_waiting_time'], res[0]['server_utilization'], res[0]['drop_rate']],
-            "System B": [res[1]['average_queue_length'], res[1]['average_waiting_time'], res[1]['server_utilization'], res[1]['drop_rate']]
-        }), hide_index=True)
+        # 2. Time Series Comparison (Queue Evolution)
+        st.subheader("2. Queue Length Evolution (Time Series)")
+        st.caption("Visualizing how the queue builds up and clears over time.")
+        
+        ts_a = res[0]['time_series_df']
+        ts_b = res[1]['time_series_df']
+        
+        fig_ts = go.Figure()
+        # Downsample for performance if too large
+        step_a = max(1, len(ts_a)//2000)
+        step_b = max(1, len(ts_b)//2000)
+        
+        fig_ts.add_trace(go.Scatter(x=ts_a['time'][::step_a], y=ts_a['queue_length'][::step_a], 
+                                   name="System A (Queue)", line=dict(color='#1f77b4', width=1)))
+        fig_ts.add_trace(go.Scatter(x=ts_b['time'][::step_b], y=ts_b['queue_length'][::step_b], 
+                                   name="System B (Queue)", line=dict(color='#ff7f0e', width=1)))
+        
+        fig_ts.update_layout(xaxis_title="Time", yaxis_title="Queue Length", height=400)
+        st.plotly_chart(fig_ts, use_container_width=True)
+
+        # 3. Box Plots (Variability)
+        st.subheader("3. Wait Time Consistency (Box Plots)")
+        st.caption("Lower boxes mean faster service. Taller boxes mean unpredictable (variable) service.")
+        
+        fig_box = go.Figure()
+        fig_box.add_trace(go.Box(y=res[0]['waiting_times'], name="System A", marker_color='#1f77b4'))
+        fig_box.add_trace(go.Box(y=res[1]['waiting_times'], name="System B", marker_color='#ff7f0e'))
+        fig_box.update_layout(yaxis_title="Waiting Time (s)", showlegend=False, height=400)
+        st.plotly_chart(fig_box, use_container_width=True)
 
 # ==========================================
 # MODE 3: STATISTICAL VALIDATION
@@ -442,73 +453,3 @@ elif mode == "Statistical Validation":
             fig_conv.add_hline(y=data['mean'], line_dash="dash", line_color="gray", annotation_text="Final Mean")
             fig_conv.update_layout(title="Law of Large Numbers: Convergence of Mean", xaxis_title="Number of Replications Included", yaxis_title="Cumulative Mean")
             st.plotly_chart(fig_conv, use_container_width=True)
-
-# ==========================================
-# MODE 4: INPUT ANALYSIS (ENHANCED)
-# ==========================================
-elif mode == "Input Analysis (Goodness of Fit)":
-    st.header("Input Modeling (Chi-Square Test)")
-    st.markdown("""
-    **Goal:** Test if your observed data fits an **Exponential Distribution**.
-    * **$H_0$ (Null Hypothesis):** Data follows Exponential distribution.
-    * **$H_1$ (Alternative Hypothesis):** Data does NOT follow Exponential distribution.
-    """)
-    
-    f = st.file_uploader("Upload CSV (Single Column)", type="csv")
-    if f:
-        data = pd.read_csv(f).iloc[:,0].tolist()
-        mean_val = np.mean(data)
-        st.write(f"**Observed Mean:** {mean_val:.4f}")
-        
-        res = perform_chi_square_test(data, "Exponential", mean_val)
-        
-        if 'error' in res:
-            st.error(res['error'])
-        else:
-            # 1. Summary Metrics
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Chi-Square Stat ($X^2$)", f"{res['chi2']:.4f}")
-            c2.metric("Critical Value", f"{res['critical']:.4f}")
-            c3.metric("P-Value", f"{res['p_value']:.4f}")
-            
-            # 2. Result Interpretation
-            if res['reject']:
-                st.error(f"**Result: Reject $H_0$.** (P-Value < 0.05). The data does NOT look Exponential.")
-            else:
-                st.success(f"**Result: Fail to Reject $H_0$.** (P-Value >= 0.05). The data fits Exponential.")
-
-            # 3. Detailed Table (Educational)
-            st.subheader("Goodness of Fit Table")
-            
-            # Construct DataFrame for table
-            rows = []
-            obs = res['observed']
-            exp = res['expected']
-            edges = res['bin_edges']
-            
-            for i in range(len(obs)):
-                lower = edges[i]
-                upper = edges[i+1] if i+1 < len(edges) else float('inf')
-                contribution = ((obs[i] - exp[i])**2) / exp[i]
-                
-                rows.append({
-                    "Bin Range": f"{lower:.2f} - {upper:.2f}",
-                    "Observed ($O_i$)": obs[i],
-                    "Expected ($E_i$)": f"{exp[i]:.2f}",
-                    "Contribution $\\frac{(O-E)^2}{E}$": f"{contribution:.4f}"
-                })
-            
-            st.dataframe(pd.DataFrame(rows), use_container_width=True)
-            
-            # 4. Visual Comparison
-            st.subheader("Observed vs Expected Frequency")
-            
-            # Prepare data for plotting
-            bin_labels = [r['Bin Range'] for r in rows]
-            
-            fig = go.Figure()
-            fig.add_trace(go.Bar(x=bin_labels, y=obs, name='Observed', marker_color='blue'))
-            fig.add_trace(go.Bar(x=bin_labels, y=exp, name='Expected', marker_color='orange'))
-            
-            fig.update_layout(barmode='group', xaxis_title="Bin Intervals", yaxis_title="Frequency")
-            st.plotly_chart(fig, use_container_width=True)
