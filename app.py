@@ -4,7 +4,7 @@ Features:
 - Modes: Single Sim, Comparative, Statistical Validation
 - Educational Features: Concept Guide, Poisson Warning, Convergence Graphs
 - Simplified Distributions (Exponential, Normal, Uniform, Poisson)
-- SimPy Engine Verification Mode
+- SimPy Engine Verification Mode (Single + Sweep)
 
 Run with: streamlit run app.py
 """
@@ -27,6 +27,7 @@ from simulation_engine import (
     run_replications,
     run_comparative_analysis,
     run_head_to_head_validation,
+    run_validation_sweep,
     SIMPY_AVAILABLE
 )
 
@@ -485,28 +486,39 @@ elif mode == "Engine Verification (SimPy)":
         st.error("⚠️ **SimPy is not installed.** This mode requires the `simpy` library. Please install it to proceed.")
         st.code("pip install simpy")
     else:
-        with st.form("simpy_form"):
+        # TABS for Single vs Sweep
+        v_tab1, v_tab2 = st.tabs(["Single Point Validation (Custom Dist)", "Traffic Intensity Sweep (Gold Standard)"])
+        
+        # --- SINGLE POINT VALIDATION ---
+        with v_tab1:
+            st.subheader("Configure Test Case")
             col1, col2 = st.columns(2)
-            verify_lam = col1.number_input("Test Arrival Rate (λ)", 1.0, 10.0, 4.0)
-            verify_mu = col2.number_input("Test Service Rate (μ)", 1.0, 10.0, 5.0)
-            submitted = st.form_submit_button("Run Verification Test")
-            
-        if submitted:
-            with st.spinner("Running Head-to-Head Comparison (50,000s)..."):
-                res = run_head_to_head_validation(arr_rate=verify_lam, svc_rate=verify_mu)
-            
-            if 'error' in res:
-                st.error(f"Error: {res['error']}")
-            else:
-                st.subheader("Comparison Results")
+            with col1:
+                st.markdown("**Arrival Process**")
+                v_arr_dist = st.selectbox("Arr Dist", [d.value for d in DistributionType], index=0, key="v_arr_d")
+                v_arr_params = get_distribution_params("Arrival", DistributionType(v_arr_dist), 4.0)
+            with col2:
+                st.markdown("**Service Process**")
+                v_svc_dist = st.selectbox("Svc Dist", [d.value for d in DistributionType], index=0, key="v_svc_d")
+                v_svc_params = get_distribution_params("Service", DistributionType(v_svc_dist), 5.0)
                 
-                # Metrics
+            submitted_single = st.button("Run Single Validation")
+                
+            if submitted_single:
+                with st.spinner("Running Head-to-Head Comparison (50,000s)..."):
+                    res = run_head_to_head_validation(
+                        arrival_dist=DistributionType(v_arr_dist), arrival_params=v_arr_params,
+                        service_dist=DistributionType(v_svc_dist), service_params=v_svc_params
+                    )
+                
+                st.subheader("Comparison Results")
                 m1, m2, m3 = st.columns(3)
-                m1.metric("Theoretical Wq", f"{res['theoretical_wq']:.4f}s")
+                
+                theo_val = f"{res['theoretical_wq']:.4f}s" if res['has_theory'] else "N/A (Not M/M/1)"
+                m1.metric("Theoretical Wq", theo_val)
                 m2.metric("Custom Engine Wq", f"{res['custom_wq']:.4f}s")
                 m3.metric("SimPy Engine Wq", f"{res['simpy_wq']:.4f}s")
                 
-                # Pass/Fail logic
                 diff = res['diff']
                 if diff < 0.05:
                     st.success(f"✅ **PASS:** Engines match! Difference is only {diff:.5f}s")
@@ -514,10 +526,39 @@ elif mode == "Engine Verification (SimPy)":
                     st.warning(f"⚠️ **WARNING:** Divergence detected ({diff:.5f}s). Check random seeds or increase duration.")
                 
                 # Bar Chart
-                fig = go.Figure(data=[
-                    go.Bar(name='Custom', x=['Avg Wait Time'], y=[res['custom_wq']], marker_color='#1f77b4'),
-                    go.Bar(name='SimPy', x=['Avg Wait Time'], y=[res['simpy_wq']], marker_color='#ff7f0e'),
-                    go.Bar(name='Theory', x=['Avg Wait Time'], y=[res['theoretical_wq']], marker_color='green')
-                ])
-                fig.update_layout(barmode='group', title="Engine Accuracy Comparison")
+                y_vals = [res['custom_wq'], res['simpy_wq']]
+                x_names = ['Custom', 'SimPy']
+                colors = ['#1f77b4', '#ff7f0e']
+                
+                if res['has_theory']:
+                    y_vals.append(res['theoretical_wq'])
+                    x_names.append('Theory')
+                    colors.append('green')
+                    
+                fig = go.Figure(data=[go.Bar(x=x_names, y=y_vals, marker_color=colors)])
+                fig.update_layout(title="Engine Accuracy Comparison", yaxis_title="Avg Wait Time (s)")
                 st.plotly_chart(fig, use_container_width=True)
+
+        # --- SWEEP VALIDATION (NEW) ---
+        with v_tab2:
+            st.info("Runs simulations across a range of Traffic Intensities (ρ) from 0.1 to 0.9. This proves the engine works under all load conditions.")
+            if st.button("Run Sweep Analysis"):
+                with st.spinner("Running Sweep (This may take 10-20 seconds)..."):
+                    sweep_results = run_validation_sweep()
+                    
+                df_sweep = pd.DataFrame(sweep_results)
+                
+                st.subheader("Sweep Results")
+                fig_sweep = go.Figure()
+                
+                # Theory Line
+                fig_sweep.add_trace(go.Scatter(x=df_sweep['rho'], y=df_sweep['Theoretical'], name='Theoretical', mode='lines', line=dict(color='green', width=2, dash='dash')))
+                # Custom Points
+                fig_sweep.add_trace(go.Scatter(x=df_sweep['rho'], y=df_sweep['Custom Engine'], name='Custom Engine', mode='markers', marker=dict(color='#1f77b4', size=10, symbol='circle')))
+                # SimPy Points
+                fig_sweep.add_trace(go.Scatter(x=df_sweep['rho'], y=df_sweep['SimPy'], name='SimPy', mode='markers', marker=dict(color='#ff7f0e', size=8, symbol='x')))
+                
+                fig_sweep.update_layout(title="Validation Sweep: Wait Time (Wq) vs Traffic Intensity (ρ)", xaxis_title="Traffic Intensity (ρ)", yaxis_title="Average Waiting Time (Wq)")
+                st.plotly_chart(fig_sweep, use_container_width=True)
+                
+                st.dataframe(df_sweep, use_container_width=True)
