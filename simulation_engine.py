@@ -93,19 +93,14 @@ class Server:
     last_busy_start: float = 0.0
     packets_served: int = 0
 
-# ... existing imports ...
-
-# ... LCG Class ... (No changes)
-# ... Event, Packet, Server Classes ... (No changes)
-
 @dataclass
 class SimulationConfig:
-    # ... (No changes to config)
+    """Configuration parameters for the simulation"""
     # RNG & Warmup
     use_lcg: bool = False
-    lcg_a: int = 16807
-    lcg_c: int = 0
-    lcg_m: int = 2147483647
+    lcg_a: int = 16807      # Multiplier
+    lcg_c: int = 0          # Increment
+    lcg_m: int = 2147483647 # Modulus
     warmup_time: float = 0.0
     random_seed: Optional[int] = 42
     
@@ -135,6 +130,7 @@ class SimulationConfig:
     simulation_time: float = 100.0
 
     def get_traffic_intensity(self) -> float:
+        """Calculate traffic intensity (rho)"""
         if self.arrival_distribution == DistributionType.EXPONENTIAL:
             eff_arr = self.arrival_rate
         else:
@@ -149,13 +145,94 @@ class SimulationConfig:
         return eff_arr / (self.num_servers * eff_svc)
 
     def to_dict(self) -> Dict:
+        """Convert config to dictionary for serialization"""
         return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
 
-# ... RandomGenerator Class ... (No changes)
+class RandomGenerator:
+    """
+    Handles random variate generation.
+    Supports both standard NumPy and custom LCG with Inverse Transform.
+    """
+    def __init__(self, config: SimulationConfig):
+        self.config = config
+        self.np_rng = np.random.default_rng(config.random_seed)
+        if config.use_lcg:
+            self.lcg = LCG(
+                seed=config.random_seed if config.random_seed else 12345,
+                a=config.lcg_a,
+                c=config.lcg_c,
+                m=config.lcg_m
+            )
+    
+    def _get_u01(self) -> float:
+        """Get Uniform(0,1) from selected source"""
+        if self.config.use_lcg:
+            return self.lcg.random()
+        return self.np_rng.random()
+
+    def generate(self, dist_type: DistributionType, **params) -> float:
+        """Generate random variate"""
+        # --- COURSE REQUIREMENT: INVERSE TRANSFORM METHOD ---
+        if dist_type == DistributionType.EXPONENTIAL:
+            # X = -ln(1-U) / lambda
+            u = self._get_u01()
+            rate = params.get('rate', 1.0)
+            return -(math.log(1.0 - u)) / rate
+        
+        elif dist_type == DistributionType.UNIFORM:
+            # X = min + (max-min)*U
+            u = self._get_u01()
+            low = params.get('min', 0.0)
+            high = params.get('max', 1.0)
+            return low + (high - low) * u
+
+        # --- HYBRID APPROACH FOR COMPLEX DISTRIBUTIONS ---
+        elif dist_type == DistributionType.NORMAL:
+            mean = params.get('mean', 0.0)
+            std = params.get('std', 1.0)
+            if self.config.use_lcg:
+                # Box-Muller for LCG
+                u1 = self._get_u01()
+                u2 = self._get_u01()
+                z = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
+                return max(0.001, mean + z * std)
+            else:
+                return max(0.001, self.np_rng.normal(mean, std))
+                
+        elif dist_type == DistributionType.POISSON:
+            lam = params.get('lam', 1.0)
+            if self.config.use_lcg:
+                # Knuth's algorithm for Poisson
+                L = math.exp(-lam)
+                k = 0
+                p = 1.0
+                while p > L:
+                    k += 1
+                    p *= self._get_u01()
+                return float(k - 1)
+            else:
+                return float(self.np_rng.poisson(lam))
+        
+        # Fallback to numpy for others
+        elif dist_type == DistributionType.WEIBULL:
+            shape = params.get('shape', 2.0)
+            scale = params.get('scale', 1.0)
+            return scale * self.np_rng.weibull(shape)
+        
+        elif dist_type == DistributionType.GAMMA:
+            shape = params.get('shape', 2.0)
+            scale = params.get('scale', 1.0)
+            return self.np_rng.gamma(shape, scale)
+            
+        elif dist_type == DistributionType.LOGNORMAL:
+            mean = params.get('mean', 0.0)
+            sigma = params.get('std', 1.0)
+            return self.np_rng.lognormal(mean, sigma)
+            
+        return 1.0
 
 @dataclass
 class EventLogEntry:
-    # ... (No changes)
     event_number: int
     clock_time: float
     event_type: str
@@ -172,7 +249,6 @@ class EventLogEntry:
 
 @dataclass
 class SystemState:
-    # ... (No changes)
     clock: float = 0.0
     servers: List[Server] = field(default_factory=list)
     queue: List[Packet] = field(default_factory=list)
@@ -207,7 +283,6 @@ class NetworkSimulator:
         self.event_counter = 0
         self.time_series: List[Dict] = []
         
-    # ... schedule_event, get_next_event ... (No changes)
     def schedule_event(self, event: Event):
         heapq.heappush(self.event_list, event)
     
@@ -215,9 +290,10 @@ class NetworkSimulator:
         if self.event_list:
             return heapq.heappop(self.event_list)
         return None
-
+        
     def update_statistics(self, new_time: float):
         time_delta = new_time - self.state.last_event_time
+        # Statistics collection is handled during run(), but accumulated here
         self.state.area_under_queue += self.state.queue_length() * time_delta
         self.state.area_under_system += self.state.packets_in_system() * time_delta
         self.state.last_event_time = new_time
@@ -269,13 +345,12 @@ class NetworkSimulator:
             self.time_series.append({
                 'time': self.state.clock,
                 'queue_length': q_after,
-                'running_avg_lq': running_avg_lq, # NEW: For convergence plot
+                'running_avg_lq': running_avg_lq,
                 'packets_in_system': self.state.packets_in_system(),
                 'servers_busy': self.state.busy_servers(),
                 'server_utilization': self.state.busy_servers() / self.config.num_servers if self.config.num_servers > 0 else 0
             })
 
-    # ... run, handle_arrival, handle_departure ... (No changes)
     def run(self) -> Dict:
         self.state = SystemState()
         self.state.servers = [Server(i) for i in range(self.config.num_servers)]
@@ -419,7 +494,7 @@ class NetworkSimulator:
             'system_times': system_times
         }
 
-    # ... get_event_log_dataframe, get_packet_table_dataframe, get_time_series_dataframe, get_server_stats_dataframe, export_to_json, perform_chi_square_test, compute_mmc_theoretical, compute_confidence_interval, run_replications, run_comparative_analysis ... (No changes)
+    # --- Data Export Helpers ---
     def get_event_log_dataframe(self) -> pd.DataFrame:
         if not self.event_log: return pd.DataFrame()
         return pd.DataFrame([vars(e) for e in self.event_log])
@@ -462,41 +537,69 @@ class NetworkSimulator:
         }
         return json.dumps(export_data, indent=2, default=str)
 
+# --- Analysis Functions ---
 def perform_chi_square_test(observed_data: List[float], dist_type: str, mean: float) -> Dict:
+    """
+    Input Analysis: Chi-Square Goodness of Fit (Enhanced)
+    Returns detailed binning data for plotting
+    """
     n = len(observed_data)
     if n < 5: return {'error': 'Insufficient data (need n >= 5)'}
+    
+    # Square root rule for bin count
     k = max(5, int(np.sqrt(n))) 
     sorted_data = sorted(observed_data)
-    expected_count_per_bin = n / k 
+    expected_count_per_bin = n / k  # Equal probability bins approach
+    
     bin_edges = []
+    # Create Equal Probability Bins based on Theoretical CDF
+    # For Exponential: CDF(x) = 1 - e^(-lambda * x)
+    # We want P(x in bin i) = 1/k
     for i in range(k + 1):
         p = i / k
         if dist_type == "Exponential":
-            if p >= 1.0: val = float('inf')
-            else: val = -mean * math.log(1.0 - p)
+            if p >= 1.0: 
+                val = float('inf')
+            else: 
+                # Inverse CDF: x = -ln(1-p) * mean
+                val = -mean * math.log(1.0 - p)
         else:
-            val = sorted_data[-1] * p 
+            val = sorted_data[-1] * p # Fallback for linear
         bin_edges.append(val)
+        
     observed_counts = [0] * k
     current_bin = 0
+    # Bin the observed data
     for x in sorted_data:
         while current_bin < k and x > bin_edges[current_bin+1]:
             current_bin += 1
         if current_bin < k:
             observed_counts[current_bin] += 1
+            
+    # Compute Chi-Square Statistic
     chi_sq = sum(((o - expected_count_per_bin) ** 2) / expected_count_per_bin for o in observed_counts)
+    
+    # Degrees of Freedom: k - 1 (bins) - 1 (estimated parameter: mean) = k - 2
     df = max(1, k - 2)
     crit = scipy_stats.chi2.ppf(0.95, df)
     p_val = 1 - scipy_stats.chi2.cdf(chi_sq, df)
+    
     return {
-        'chi2': chi_sq, 'critical': crit, 'p_value': p_val, 'reject': chi_sq > crit, 
-        'observed': observed_counts, 'expected': [expected_count_per_bin] * k,
-        'bin_edges': bin_edges, 'df': df, 'num_bins': k
+        'chi2': chi_sq, 
+        'critical': crit, 
+        'p_value': p_val, 
+        'reject': chi_sq > crit, 
+        'observed': observed_counts,
+        'expected': [expected_count_per_bin] * k,
+        'bin_edges': bin_edges,
+        'df': df,
+        'num_bins': k
     }
 
 def compute_mmc_theoretical(lam: float, mu: float, c: int) -> Dict:
     rho = lam / (c * mu)
-    if rho >= 1: return {'stable': False, 'rho': rho, 'Lq': 0, 'Wq': 0, 'L': 0, 'W': 0}
+    if rho >= 1:
+        return {'stable': False, 'rho': rho, 'Lq': 0, 'Wq': 0, 'L': 0, 'W': 0}
     sum_terms = sum(((lam/mu)**n) / math.factorial(n) for n in range(c))
     last_term = ((lam/mu)**c) / (math.factorial(c) * (1 - rho))
     P0 = 1 / (sum_terms + last_term)
