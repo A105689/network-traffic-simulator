@@ -1,7 +1,10 @@
 """
-Network Traffic Simulation Engine (Merged & Enhanced)
-Combines rich statistical reporting of the original version with 
-academic requirements (LCG, Warmup, Chi-Square) of the new version.
+Network Traffic Simulation Engine (Educational Edition)
+Features: 
+- LCG RNG (Linear Congruential Generator) for reproducibility
+- Inverse Transform Method for variate generation
+- Warm-up/Data Deletion support
+- Detailed Chi-Square goodness-of-fit reporting
 """
 
 import heapq
@@ -33,9 +36,8 @@ class DistributionType(Enum):
 # --- CORE COMPONENT: Linear Congruential Generator ---
 class LCG:
     """
-    Linear Congruential Generator (LCG) for Course Requirements
-    Implements X_{i} = (a * X_{i-1} + c) mod m
-    Default parameters: a=16807, m=2^31-1 (Lewis, Goodman, and Miller, 1969)
+    Linear Congruential Generator (LCG)
+    Equation: X_{i} = (a * X_{i-1} + c) mod m
     """
     def __init__(self, seed: int, a: int = 16807, c: int = 0, m: int = 2147483647):
         self.state = seed if seed != 0 else 1 
@@ -144,7 +146,6 @@ class SimulationConfig:
 
     def to_dict(self) -> Dict:
         """Convert config to dictionary for serialization"""
-        # Exclude internal objects, just basic types
         return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
 
 class RandomGenerator:
@@ -156,7 +157,6 @@ class RandomGenerator:
         self.config = config
         self.np_rng = np.random.default_rng(config.random_seed)
         if config.use_lcg:
-            # Pass custom LCG parameters from config
             self.lcg = LCG(
                 seed=config.random_seed if config.random_seed else 12345,
                 a=config.lcg_a,
@@ -213,7 +213,7 @@ class RandomGenerator:
             else:
                 return float(self.np_rng.poisson(lam))
         
-        # Fallback to numpy for others but still respected config params
+        # Fallback to numpy for others
         elif dist_type == DistributionType.WEIBULL:
             shape = params.get('shape', 2.0)
             scale = params.get('scale', 1.0)
@@ -233,7 +233,6 @@ class RandomGenerator:
 
 @dataclass
 class EventLogEntry:
-    """Detailed entry for the event log table"""
     event_number: int
     clock_time: float
     event_type: str
@@ -250,25 +249,16 @@ class EventLogEntry:
 
 @dataclass
 class SystemState:
-    """Current state of the simulation"""
     clock: float = 0.0
     servers: List[Server] = field(default_factory=list)
     queue: List[Packet] = field(default_factory=list)
-    
-    # Accumulators
     total_arrivals: int = 0
     total_departures: int = 0
     total_drops: int = 0
-    
-    # Time-weighted statistics
     area_under_queue: float = 0.0
     area_under_system: float = 0.0
     last_event_time: float = 0.0
-    
-    # Packet tracking
     completed_packets: List[Packet] = field(default_factory=list)
-    
-    # Warmup flag
     in_warmup: bool = False
 
     def queue_length(self) -> int: return len(self.queue)
@@ -282,10 +272,6 @@ class SystemState:
         return None
 
 class NetworkSimulator:
-    """
-    Discrete Event Simulation with Event-Scheduling
-    Features: Future Event List (FEL), Warmup, Statistics, Logging
-    """
     def __init__(self, config: SimulationConfig):
         self.config = config
         self.rng = RandomGenerator(config)
@@ -306,18 +292,13 @@ class NetworkSimulator:
         return None
         
     def update_statistics(self, new_time: float):
-        """Update time-weighted area statistics"""
         time_delta = new_time - self.state.last_event_time
-        
-        # Only accumulate if not in warmup (or handle explicit reset)
-        # Here we accumulate always, but reset at T0 if warmup is used.
+        # Statistics collection is handled during run(), but accumulated here
         self.state.area_under_queue += self.state.queue_length() * time_delta
         self.state.area_under_system += self.state.packets_in_system() * time_delta
-        
         self.state.last_event_time = new_time
 
     def handle_warmup_end(self):
-        """Reset statistics at T0"""
         self.state.total_arrivals = 0
         self.state.total_departures = 0
         self.state.total_drops = 0
@@ -326,7 +307,6 @@ class NetworkSimulator:
         self.state.completed_packets = []
         self.time_series = [] # Clear warmup traces
         
-        # Reset server stats
         for s in self.state.servers:
             s.total_busy_time = 0.0
             s.packets_served = 0
@@ -338,7 +318,6 @@ class NetworkSimulator:
 
     def log_event(self, event_type: str, packet_id: int, server_id: int, q_before: int, q_after: int):
         self.event_counter += 1
-        
         entry = EventLogEntry(
             event_number=self.event_counter,
             clock_time=self.state.clock,
@@ -366,8 +345,6 @@ class NetworkSimulator:
             })
 
     def run(self) -> Dict:
-        """Main Simulation Loop"""
-        # Initialization
         self.state = SystemState()
         self.state.servers = [Server(i) for i in range(self.config.num_servers)]
         self.state.in_warmup = (self.config.warmup_time > 0)
@@ -377,30 +354,22 @@ class NetworkSimulator:
         self.packet_counter = 0
         self.event_counter = 0
         
-        # Schedule first arrival
         self.packet_counter += 1
         self.schedule_event(Event(0.0, EventType.ARRIVAL, self.packet_counter))
         
-        # Schedule Warmup End
         if self.config.warmup_time > 0:
             self.schedule_event(Event(self.config.warmup_time, EventType.WARMUP_END))
             
-        # Loop
         while self.event_list:
             event = self.get_next_event()
-            
-            if event.time > self.config.simulation_time:
-                break
+            if event.time > self.config.simulation_time: break
             
             self.update_statistics(event.time)
             self.state.clock = event.time
             
-            if event.event_type == EventType.ARRIVAL:
-                self.handle_arrival(event)
-            elif event.event_type == EventType.DEPARTURE:
-                self.handle_departure(event)
-            elif event.event_type == EventType.WARMUP_END:
-                self.handle_warmup_end()
+            if event.event_type == EventType.ARRIVAL: self.handle_arrival(event)
+            elif event.event_type == EventType.DEPARTURE: self.handle_departure(event)
+            elif event.event_type == EventType.WARMUP_END: self.handle_warmup_end()
         
         self.update_statistics(self.config.simulation_time)
         return self.compute_statistics()
@@ -409,39 +378,29 @@ class NetworkSimulator:
         queue_before = self.state.queue_length()
         if not self.state.in_warmup:
             self.state.total_arrivals += 1
-            
         packet = Packet(packet_id=event.packet_id, arrival_time=event.time)
         
-        # Logic: Queue Capacity Check
         if self.config.queue_capacity > 0 and \
            self.state.queue_length() >= self.config.queue_capacity and \
            self.state.all_servers_busy():
-            if not self.state.in_warmup:
-                self.state.total_drops += 1
+            if not self.state.in_warmup: self.state.total_drops += 1
             self.log_event("DROP", event.packet_id, -1, queue_before, self.state.queue_length())
         else:
             idle_server = self.state.get_idle_server()
             if idle_server:
-                # Start Service
                 idle_server.busy = True
                 idle_server.current_packet = packet
                 idle_server.last_busy_start = event.time
                 packet.service_start_time = event.time
                 packet.server_id = idle_server.server_id
-                
                 svc_time = self.generate_service_time()
                 packet.service_time = svc_time
-                
-                self.schedule_event(Event(event.time + svc_time, EventType.DEPARTURE, 
-                                          packet.packet_id, idle_server.server_id))
-                
+                self.schedule_event(Event(event.time + svc_time, EventType.DEPARTURE, packet.packet_id, idle_server.server_id))
                 self.log_event("ARRIVAL (SERVE)", event.packet_id, idle_server.server_id, queue_before, self.state.queue_length())
             else:
-                # Enqueue
                 self.state.queue.append(packet)
                 self.log_event("ARRIVAL (QUEUE)", event.packet_id, -1, queue_before, self.state.queue_length())
         
-        # Schedule Next Arrival
         inter_val = self.generate_interarrival_time()
         next_time = event.time + inter_val
         if next_time <= self.config.simulation_time:
@@ -452,7 +411,6 @@ class NetworkSimulator:
         queue_before = self.state.queue_length()
         server = self.state.servers[event.server_id]
         
-        # Complete current packet
         if server.current_packet:
             if not self.state.in_warmup:
                 server.current_packet.departure_time = event.time
@@ -461,19 +419,15 @@ class NetworkSimulator:
                 server.packets_served += 1
                 server.total_busy_time += (event.time - server.last_busy_start)
         
-        # Check queue for next packet
         if self.state.queue:
             next_packet = self.state.queue.pop(0)
             server.current_packet = next_packet
             next_packet.service_start_time = event.time
             next_packet.server_id = server.server_id
             server.last_busy_start = event.time
-            
             svc_time = self.generate_service_time()
             next_packet.service_time = svc_time
-            
-            self.schedule_event(Event(event.time + svc_time, EventType.DEPARTURE,
-                                      next_packet.packet_id, server.server_id))
+            self.schedule_event(Event(event.time + svc_time, EventType.DEPARTURE, next_packet.packet_id, server.server_id))
             self.log_event("DEPARTURE (NEXT)", event.packet_id, server.server_id, queue_before, self.state.queue_length())
         else:
             server.busy = False
@@ -495,7 +449,6 @@ class NetworkSimulator:
                                  scale=c.service_scale, lam=c.service_mean)
 
     def compute_statistics(self) -> Dict:
-        """Compute comprehensive statistics (Restored from _00)"""
         effective_time = self.config.simulation_time - self.config.warmup_time
         if effective_time <= 0: effective_time = 1.0
         
@@ -503,11 +456,8 @@ class NetworkSimulator:
         system_times = [p.system_time for p in self.state.completed_packets if p.system_time is not None]
         service_times = [p.service_time for p in self.state.completed_packets]
         
-        # Server utilization adjustment for end time
         for server in self.state.servers:
             if server.busy:
-                # Add the final chunk of busy time until sim end
-                # Ensure we don't count pre-warmup time if reset happened
                 start = max(server.last_busy_start, self.config.warmup_time)
                 server.total_busy_time += (self.config.simulation_time - start)
 
@@ -520,27 +470,19 @@ class NetworkSimulator:
             'total_drops': self.state.total_drops,
             'packets_remaining': self.state.packets_in_system(),
             'num_servers': self.config.num_servers,
-            
             'average_queue_length': self.state.area_under_queue / effective_time,
             'average_system_length': self.state.area_under_system / effective_time,
-            
             'average_waiting_time': np.mean(waiting_times) if waiting_times else 0,
             'average_system_time': np.mean(system_times) if system_times else 0,
             'average_service_time': np.mean(service_times) if service_times else 0,
-            
             'std_waiting_time': np.std(waiting_times) if waiting_times else 0,
             'std_system_time': np.std(system_times) if system_times else 0,
-            
             'max_waiting_time': max(waiting_times) if waiting_times else 0,
             'max_system_time': max(system_times) if system_times else 0,
-            
             'throughput': self.state.total_departures / effective_time,
             'drop_rate': self.state.total_drops / self.state.total_arrivals if self.state.total_arrivals > 0 else 0,
             'server_utilization': utilization,
-            
             'traffic_intensity': self.config.get_traffic_intensity(),
-            
-            # Raw data for histograms
             'waiting_times': waiting_times,
             'system_times': system_times
         }
@@ -555,7 +497,6 @@ class NetworkSimulator:
         data = []
         for p in self.state.completed_packets:
             d = vars(p).copy()
-            # Clean up optionals
             d['waiting_time'] = p.waiting_time
             d['system_time'] = p.system_time
             data.append(d)
@@ -578,12 +519,9 @@ class NetworkSimulator:
         return pd.DataFrame(data)
 
     def export_to_json(self) -> str:
-        """Export core results to JSON"""
         stats = self.compute_statistics()
-        # Remove raw lists to keep JSON small
         stats.pop('waiting_times', None)
         stats.pop('system_times', None)
-        
         export_data = {
             'config': self.config.to_dict(),
             'statistics': stats,
@@ -594,58 +532,74 @@ class NetworkSimulator:
 
 # --- Analysis Functions ---
 def perform_chi_square_test(observed_data: List[float], dist_type: str, mean: float) -> Dict:
-    """Input Analysis: Chi-Square Goodness of Fit"""
+    """
+    Input Analysis: Chi-Square Goodness of Fit (Enhanced)
+    Returns detailed binning data for plotting
+    """
     n = len(observed_data)
     if n < 5: return {'error': 'Insufficient data (need n >= 5)'}
     
+    # Square root rule for bin count
     k = max(5, int(np.sqrt(n))) 
     sorted_data = sorted(observed_data)
-    expected_freq = n / k
+    expected_count_per_bin = n / k  # Equal probability bins approach
     
     bin_edges = []
-    # Equal probability bins
+    # Create Equal Probability Bins based on Theoretical CDF
+    # For Exponential: CDF(x) = 1 - e^(-lambda * x)
+    # We want P(x in bin i) = 1/k
     for i in range(k + 1):
         p = i / k
         if dist_type == "Exponential":
-            if p >= 1.0: val = float('inf')
-            else: val = -mean * math.log(1.0 - p)
+            if p >= 1.0: 
+                val = float('inf')
+            else: 
+                # Inverse CDF: x = -ln(1-p) * mean
+                val = -mean * math.log(1.0 - p)
         else:
             val = sorted_data[-1] * p # Fallback for linear
         bin_edges.append(val)
         
-    observed_freqs = [0] * k
+    observed_counts = [0] * k
     current_bin = 0
+    # Bin the observed data
     for x in sorted_data:
         while current_bin < k and x > bin_edges[current_bin+1]:
             current_bin += 1
         if current_bin < k:
-            observed_freqs[current_bin] += 1
+            observed_counts[current_bin] += 1
             
-    chi_sq = sum(((o - expected_freq) ** 2) / expected_freq for o in observed_freqs)
-    df = k - 1 - 1
+    # Compute Chi-Square Statistic
+    chi_sq = sum(((o - expected_count_per_bin) ** 2) / expected_count_per_bin for o in observed_counts)
+    
+    # Degrees of Freedom: k - 1 (bins) - 1 (estimated parameter: mean) = k - 2
+    df = max(1, k - 2)
     crit = scipy_stats.chi2.ppf(0.95, df)
     p_val = 1 - scipy_stats.chi2.cdf(chi_sq, df)
     
     return {
-        'chi2': chi_sq, 'critical': crit, 'p_value': p_val, 
-        'reject': chi_sq > crit, 'observed': observed_freqs
+        'chi2': chi_sq, 
+        'critical': crit, 
+        'p_value': p_val, 
+        'reject': chi_sq > crit, 
+        'observed': observed_counts,
+        'expected': [expected_count_per_bin] * k,
+        'bin_edges': bin_edges,
+        'df': df,
+        'num_bins': k
     }
 
 def compute_mmc_theoretical(lam: float, mu: float, c: int) -> Dict:
-    """M/M/c Theoretical Formulas"""
     rho = lam / (c * mu)
     if rho >= 1:
         return {'stable': False, 'rho': rho, 'Lq': 0, 'Wq': 0, 'L': 0, 'W': 0}
-    
     sum_terms = sum(((lam/mu)**n) / math.factorial(n) for n in range(c))
     last_term = ((lam/mu)**c) / (math.factorial(c) * (1 - rho))
     P0 = 1 / (sum_terms + last_term)
-    
     Lq = (P0 * ((lam/mu)**c) * rho) / (math.factorial(c) * ((1 - rho)**2))
     L = Lq + (lam/mu)
     Wq = Lq / lam
     W = Wq + (1/mu)
-    
     return {'stable': True, 'rho': rho, 'Lq': Lq, 'Wq': Wq, 'L': L, 'W': W}
 
 def compute_confidence_interval(data: List[float], confidence: float = 0.95) -> Tuple[float, float, float]:
@@ -659,12 +613,10 @@ def compute_confidence_interval(data: List[float], confidence: float = 0.95) -> 
 def run_replications(config: SimulationConfig, num_reps: int = 10, confidence: float = 0.95) -> Dict:
     results = {'Wq': [], 'Lq': [], 'utilization': [], 'throughput': [], 'drop_rate': [], 'L': [], 'W': []}
     base_seed = config.random_seed if config.random_seed else 12345
-    
     for i in range(num_reps):
-        config.random_seed = base_seed + i * 997 # Ensure distinct streams
+        config.random_seed = base_seed + i * 997 
         sim = NetworkSimulator(config)
         res = sim.run()
-        
         results['Wq'].append(res['average_waiting_time'])
         results['Lq'].append(res['average_queue_length'])
         results['utilization'].append(res['server_utilization'])
@@ -672,13 +624,11 @@ def run_replications(config: SimulationConfig, num_reps: int = 10, confidence: f
         results['drop_rate'].append(res['drop_rate'])
         results['L'].append(res['average_system_length'])
         results['W'].append(res['average_system_time'])
-    
     ci_results = {}
     for key, vals in results.items():
         m, lo, hi = compute_confidence_interval(vals, confidence)
         ci_results[key] = {'mean': m, 'lower': lo, 'upper': hi, 'std': np.std(vals), 'values': vals}
-        
-    config.random_seed = base_seed # Reset
+    config.random_seed = base_seed
     return ci_results
 
 def run_comparative_analysis(configs: List[SimulationConfig]) -> List[Dict]:
@@ -686,7 +636,6 @@ def run_comparative_analysis(configs: List[SimulationConfig]) -> List[Dict]:
     for cfg in configs:
         sim = NetworkSimulator(cfg)
         res = sim.run()
-        # Merge config dict for reference
         res.update(cfg.to_dict())
         results.append(res)
     return results
