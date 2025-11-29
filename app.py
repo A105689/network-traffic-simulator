@@ -1,10 +1,10 @@
 """
-Network Traffic Simulation - Educational & Educational Friendly Version
+Network Traffic Simulation - Educational Version (Final)
 Features: 
-- Concept Guides & Tooltips
-- Transparent Chi-Square Analysis
-- Academic Rigor (LCG, Warm-up)
-- Poisson Logic Explanation
+- Modes: Single Sim, Comparative, Statistical Validation
+- Educational Features: Concept Guide, Poisson Warning, Convergence Graphs
+- Simplified Distributions (Exponential, Normal, Uniform, Poisson)
+- SimPy Engine Verification Mode
 
 Run with: streamlit run app.py
 """
@@ -25,7 +25,9 @@ from simulation_engine import (
     compute_mmc_theoretical,
     compute_confidence_interval,
     run_replications,
-    run_comparative_analysis
+    run_comparative_analysis,
+    run_head_to_head_validation,
+    SIMPY_AVAILABLE
 )
 
 st.set_page_config(
@@ -71,7 +73,7 @@ st.markdown("---")
 # --- Mode Selection ---
 mode = st.sidebar.radio(
     "Select Mode",
-    ["Single Simulation", "Comparative Analysis", "Statistical Validation"],
+    ["Single Simulation", "Comparative Analysis", "Statistical Validation", "Engine Verification (SimPy)"],
     index=0
 )
 
@@ -467,3 +469,55 @@ elif mode == "Statistical Validation":
             fig_conv.add_hline(y=data['mean'], line_dash="dash", line_color="gray", annotation_text="Final Mean")
             fig_conv.update_layout(title="Law of Large Numbers: Convergence of Mean", xaxis_title="Number of Replications Included", yaxis_title="Cumulative Mean")
             st.plotly_chart(fig_conv, use_container_width=True)
+
+# ==========================================
+# MODE 4: ENGINE VERIFICATION (SIMPY)
+# ==========================================
+elif mode == "Engine Verification (SimPy)":
+    st.header("Engine Verification: Custom vs SimPy")
+    st.markdown("""
+    **Objective:** Validate that our custom-built "Event-Scheduling" engine produces results identical to the industry-standard **SimPy** library.
+    
+    *This runs a long-duration simulation (T=50,000s) to minimize statistical variance.*
+    """)
+    
+    if not SIMPY_AVAILABLE:
+        st.error("⚠️ **SimPy is not installed.** This mode requires the `simpy` library. Please install it to proceed.")
+        st.code("pip install simpy")
+    else:
+        with st.form("simpy_form"):
+            col1, col2 = st.columns(2)
+            verify_lam = col1.number_input("Test Arrival Rate (λ)", 1.0, 10.0, 4.0)
+            verify_mu = col2.number_input("Test Service Rate (μ)", 1.0, 10.0, 5.0)
+            submitted = st.form_submit_button("Run Verification Test")
+            
+        if submitted:
+            with st.spinner("Running Head-to-Head Comparison (50,000s)..."):
+                res = run_head_to_head_validation(arr_rate=verify_lam, svc_rate=verify_mu)
+            
+            if 'error' in res:
+                st.error(f"Error: {res['error']}")
+            else:
+                st.subheader("Comparison Results")
+                
+                # Metrics
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Theoretical Wq", f"{res['theoretical_wq']:.4f}s")
+                m2.metric("Custom Engine Wq", f"{res['custom_wq']:.4f}s")
+                m3.metric("SimPy Engine Wq", f"{res['simpy_wq']:.4f}s")
+                
+                # Pass/Fail logic
+                diff = res['diff']
+                if diff < 0.05:
+                    st.success(f"✅ **PASS:** Engines match! Difference is only {diff:.5f}s")
+                else:
+                    st.warning(f"⚠️ **WARNING:** Divergence detected ({diff:.5f}s). Check random seeds or increase duration.")
+                
+                # Bar Chart
+                fig = go.Figure(data=[
+                    go.Bar(name='Custom', x=['Avg Wait Time'], y=[res['custom_wq']], marker_color='#1f77b4'),
+                    go.Bar(name='SimPy', x=['Avg Wait Time'], y=[res['simpy_wq']], marker_color='#ff7f0e'),
+                    go.Bar(name='Theory', x=['Avg Wait Time'], y=[res['theoretical_wq']], marker_color='green')
+                ])
+                fig.update_layout(barmode='group', title="Engine Accuracy Comparison")
+                st.plotly_chart(fig, use_container_width=True)
