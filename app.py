@@ -37,8 +37,8 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("Network Traffic Simulation 🎓")
-st.markdown("### Discrete Event Simulation (Event-Scheduling Approach)")
+st.title("SWE627 - Network Traffic Simulation 🎓")
+st.markdown("### Discrete Event Simulation (Event-Scheduling Approach) - ADEL2025")
 
 # --- EDUCATIONAL: Concept Guide ---
 with st.expander("📘 Concept Guide: Click to learn the basics"):
