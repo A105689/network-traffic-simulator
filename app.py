@@ -53,6 +53,7 @@ with st.expander("📘 Concept Guide: Click to learn the basics"):
         **2. Key Metrics:**
         * $L_q$: Average number of packets in the **Queue**.
         * $W_q$: Average time a packet waits in the **Queue**.
+        * $W$: Total time a packet spends in the **System** (Queue + Service).
         * $\\rho$ (Traffic Intensity): $\\lambda / (c \\cdot \\mu)$.
         """)
     with c2:
@@ -340,25 +341,28 @@ elif mode == "Comparative Analysis":
             res = run_comparative_analysis([cfg_a, cfg_b])
         
         # 1. Bar Charts (Averages)
-        metrics = ['average_queue_length', 'average_waiting_time', 'server_utilization', 'drop_rate']
-        names = ['Avg Queue (Lq)', 'Avg Wait (Wq)', 'Utilization (ρ)', 'Drop Rate (%)']
+        metrics = ['average_queue_length', 'average_waiting_time', 'average_system_time', 'server_utilization', 'drop_rate']
+        names = ['Avg Queue (Lq)', 'Avg Wait (Wq)', 'Total System Time (W)', 'Utilization (ρ)', 'Drop Rate (%)']
         
         # Adjust data for plotting (convert drop rate to %)
         res[0]['drop_rate'] = res[0]['drop_rate'] * 100
         res[1]['drop_rate'] = res[1]['drop_rate'] * 100
         
         st.subheader("1. Performance Metrics (Averages)")
-        fig = make_subplots(rows=1, cols=4, subplot_titles=names)
+        fig = make_subplots(rows=2, cols=3, subplot_titles=names)
         colors = ['#1f77b4', '#ff7f0e'] # Blue, Orange
         
         for i, m in enumerate(metrics):
+            row = (i // 3) + 1
+            col = (i % 3) + 1
             fig.add_trace(go.Bar(
                 x=['System A', 'System B'], 
                 y=[res[0][m], res[1][m]], 
                 name=names[i],
                 marker_color=colors,
                 showlegend=False
-            ), row=1, col=i+1)
+            ), row=row, col=col)
+        fig.update_layout(height=600)
         st.plotly_chart(fig, use_container_width=True)
         
         # 2. Time Series Comparison (Queue Evolution)
@@ -390,6 +394,14 @@ elif mode == "Comparative Analysis":
         fig_box.add_trace(go.Box(y=res[1]['waiting_times'], name="System B", marker_color='#ff7f0e'))
         fig_box.update_layout(yaxis_title="Waiting Time (s)", showlegend=False, height=400)
         st.plotly_chart(fig_box, use_container_width=True)
+        
+        # Data table for detailed inspection
+        st.caption("Detailed Metrics")
+        st.dataframe(pd.DataFrame({
+            "Metric": names,
+            "System A": [res[0]['average_queue_length'], res[0]['average_waiting_time'], res[0]['average_system_time'], res[0]['server_utilization'], res[0]['drop_rate']],
+            "System B": [res[1]['average_queue_length'], res[1]['average_waiting_time'], res[1]['average_system_time'], res[1]['server_utilization'], res[1]['drop_rate']]
+        }), hide_index=True)
 
 # ==========================================
 # MODE 3: STATISTICAL VALIDATION
